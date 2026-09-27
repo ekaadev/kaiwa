@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AllocationCounter, Base, Participant
+from app.practice import PracticeCallStarter, PracticeUnavailable
 from app.study import enroll, find_by_token
 
 bearer = HTTPBearer(auto_error=False)
@@ -35,6 +36,17 @@ class ParticipantView(BaseModel):
 class EnrollmentView(ParticipantView):
     # Shown only once. The client must store this secret securely, not log it.
     resume_token: str
+
+
+class PracticeStartRequest(BaseModel):
+    # Practice mode and EOT strategy are server decisions, never client options.
+    model_config = ConfigDict(extra="forbid")
+
+
+class PracticeCallView(BaseModel):
+    call_id: UUID
+    room_url: str
+    join_token: str
 
 
 def public_view(participant: Participant) -> ParticipantView:
@@ -70,7 +82,9 @@ def get_current_participant(
     return participant
 
 
-def create_app(engine: Engine | None = None) -> FastAPI:
+def create_app(
+    engine: Engine | None = None, *, practice_starter: PracticeCallStarter | None = None
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         owns_engine = engine is None
@@ -99,6 +113,21 @@ def create_app(engine: Engine | None = None) -> FastAPI:
     def health(db: Annotated[Session, Depends(get_db)]):
         db.execute(text("SELECT 1"))
         return {"status": "ok"}
+
+    @app.post("/v1/practice/calls", response_model=PracticeCallView, status_code=201)
+    async def create_practice_call(_: PracticeStartRequest, response: Response) -> PracticeCallView:
+        if practice_starter is None:
+            raise HTTPException(status_code=503, detail="Practice calls are unavailable")
+        try:
+            connection = await practice_starter.start(eot_method="adaptive")
+        except PracticeUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Practice calls are unavailable") from exc
+        response.headers["Cache-Control"] = "no-store"
+        return PracticeCallView(
+            call_id=connection.call_id,
+            room_url=connection.room_url,
+            join_token=connection.join_token,
+        )
 
     @app.post("/v1/study/participants", response_model=EnrollmentView, status_code=201)
     def create_participant(

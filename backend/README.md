@@ -1,6 +1,6 @@
 # AI Conversation — backend foundation
 
-**Scope of this first slice:** a FastAPI control API for anonymous study enrollment, balanced fixed/adaptive allocation, and read-only study resumption. The audio call, LiveKit Cloud room/token creation, Pipecat pipeline, session completion/retry, recordings, and research export are **not implemented yet**. This is not ready for real participants or production deployment.
+**Scope so far:** a FastAPI control API for anonymous study enrollment, balanced fixed/adaptive allocation, and read-only study resumption. There is also a fail-closed entry point for anonymous practice calls, but no voice service is connected. The audio call, LiveKit Cloud room/token creation, Pipecat pipeline, session completion/retry, recordings, and research export are **not implemented yet**. This is not ready for real participants or production deployment.
 
 The architecture decision is: KMP mobile client → FastAPI on a long-running RunPod Pod for control; mobile and Pipecat (also on RunPod) each join a LiveKit Cloud room for WebRTC media. No public inbound UDP is required on the RunPod Pod. PostgreSQL stores study metadata; audio files will be separate. The Obsidian concept/requirements docs remain the source of product behavior.
 
@@ -20,7 +20,9 @@ uv run uvicorn app.main:app --reload
 
 `GET /health` checks the DB. `POST /v1/study/participants` with `{"accepted":true}` returns a pseudonymous participant ID, an **opaque resume token shown only once**, and public Sesi 1/2 statuses (no EOT labels). `GET /v1/study/me` requires `Authorization: Bearer <resume_token>` and returns the same participant/progress. Do not log the token or use participant IDs as authentication.
 
-The consent text/version and privacy policy must be approved **before** any real participant uses this endpoint. A user-facing study explanation and consent are not provided by this backend alone.
+`POST /v1/practice/calls` takes `{}` without a study token or research consent. The request does **not** accept an EOT method; the backend passes `adaptive` to the practice voice service. The API does not use the enrollment path or write study records. By default it returns `503 Practice calls are unavailable`: no LiveKit/Pipecat service is installed or configured, and it does **not** issue fake call credentials. A future `PracticeCallStarter` must only return a room URL and short-lived, room-scoped client token after the AI tutor is ready; if setup fails it must clean up and report unavailability. Before enabling anonymous call provisioning, add resource limits and test real calls on the deployment network. Practice audio/history must stay out of research storage and exports.
+
+The consent text/version and privacy policy must be approved **before** any real participant uses the study enrollment endpoint. A user-facing study explanation and consent are not provided by this backend alone.
 
 ## Tests
 
