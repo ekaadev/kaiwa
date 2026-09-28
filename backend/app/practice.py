@@ -17,10 +17,15 @@ class PracticeConnection:
 
 
 class PracticeCallStarter(Protocol):
+    async def ready(self) -> bool:
+        """Check capacity and external transport connectivity without creating a room."""
+        ...
+
     async def start(self, *, eot_method: Literal["adaptive"]) -> PracticeConnection:
-        """Return only when a short-lived client token and the voice tutor are ready.
+        """Return only when the Pipecat transport is joined and the client token is ready.
 
         If provisioning fails, clean up any room/bot and raise PracticeUnavailable.
         Practice calls must not create participants, study sessions, or research records.
+        The voice tutor pipeline is a separate feature; joining alone cannot answer speech.
         """
         ...

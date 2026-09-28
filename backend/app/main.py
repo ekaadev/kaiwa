@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.livekit_practice import livekit_practice_from_env
 from app.models import AllocationCounter, Base, Participant
 from app.practice import PracticeCallStarter, PracticeUnavailable
 from app.study import enroll, find_by_token
@@ -88,6 +89,11 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         owns_engine = engine is None
+        owned_starter = (
+            livekit_practice_from_env() if practice_starter is None and owns_engine else None
+        )
+        selected_starter = practice_starter if practice_starter is not None else owned_starter
+        app.state.practice_starter = selected_starter
         selected_engine = engine
         if selected_engine is None:
             url = os.getenv("DATABASE_URL")
@@ -104,6 +110,8 @@ def create_app(
         try:
             yield
         finally:
+            if owned_starter is not None:
+                await owned_starter.aclose()
             if owns_engine:
                 selected_engine.dispose()
 
@@ -114,12 +122,22 @@ def create_app(
         db.execute(text("SELECT 1"))
         return {"status": "ok"}
 
+    @app.get("/v1/practice/readiness")
+    async def practice_readiness(request: Request):
+        starter = request.app.state.practice_starter
+        if starter is None or not await starter.ready():
+            raise HTTPException(status_code=503, detail="Practice calls are unavailable")
+        return {"ready": True}
+
     @app.post("/v1/practice/calls", response_model=PracticeCallView, status_code=201)
-    async def create_practice_call(_: PracticeStartRequest, response: Response) -> PracticeCallView:
-        if practice_starter is None:
+    async def create_practice_call(
+        _: PracticeStartRequest, response: Response, request: Request
+    ) -> PracticeCallView:
+        starter = request.app.state.practice_starter
+        if starter is None:
             raise HTTPException(status_code=503, detail="Practice calls are unavailable")
         try:
-            connection = await practice_starter.start(eot_method="adaptive")
+            connection = await starter.start(eot_method="adaptive")
         except PracticeUnavailable as exc:
             raise HTTPException(status_code=503, detail="Practice calls are unavailable") from exc
         response.headers["Cache-Control"] = "no-store"

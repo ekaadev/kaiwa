@@ -32,9 +32,11 @@ def test_practice_call_fails_closed_when_voice_service_is_unavailable(backend):
     client, engine = backend
 
     response = client.post("/v1/practice/calls", json={})
+    readiness = client.get("/v1/practice/readiness")
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Practice calls are unavailable"}
+    assert readiness.status_code == 503
     with Session(engine) as db:
         assert db.scalars(select(Participant)).all() == []
         assert db.scalars(select(StudySession)).all() == []
@@ -46,6 +48,9 @@ def test_anonymous_practice_call_uses_server_adaptive_and_no_study_records(engin
     class ReadyVoiceService:
         methods = []
 
+        async def ready(self):
+            return True
+
         async def start(self, *, eot_method):
             self.methods.append(eot_method)
             return PracticeConnection(
@@ -56,8 +61,10 @@ def test_anonymous_practice_call_uses_server_adaptive_and_no_study_records(engin
 
     voice_service = ReadyVoiceService()
     with TestClient(create_app(engine, practice_starter=voice_service)) as client:
+        readiness = client.get("/v1/practice/readiness")
         response = client.post("/v1/practice/calls", json={})
 
+    assert readiness.json() == {"ready": True}
     assert response.status_code == 201
     assert response.json() == {
         "call_id": "db7ea6d0-a45e-455d-9193-67a84d112f1f",
@@ -83,6 +90,21 @@ def test_client_cannot_choose_a_different_practice_method(backend):
     with Session(engine) as db:
         assert db.scalars(select(Participant)).all() == []
         assert db.scalars(select(StudySession)).all() == []
+
+
+def test_practice_readiness_reports_unavailable_without_calling_start(engine):
+    class UnavailableVoiceService:
+        async def ready(self):
+            return False
+
+        async def start(self, *, eot_method):
+            raise AssertionError("readiness must not create a call")
+
+    with TestClient(create_app(engine, practice_starter=UnavailableVoiceService())) as client:
+        response = client.get("/v1/practice/readiness")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Practice calls are unavailable"}
 
 
 def test_voice_service_failure_hides_details_and_does_not_create_study_data(engine):

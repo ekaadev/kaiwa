@@ -1,6 +1,6 @@
 # AI Conversation — backend foundation
 
-**Scope so far:** a FastAPI control API for anonymous study enrollment, balanced fixed/adaptive allocation, and read-only study resumption. There is also a fail-closed entry point for anonymous practice calls, but no voice service is connected. The audio call, LiveKit Cloud room/token creation, Pipecat pipeline, session completion/retry, recordings, and research export are **not implemented yet**. This is not ready for real participants or production deployment.
+**Scope so far:** a FastAPI control API for anonymous study enrollment, balanced fixed/adaptive allocation, and read-only study resumption. Anonymous practice calls can now create a LiveKit room and wait for a transport-only Pipecat bot to join. The bot **does not understand or answer speech yet**: EOT, Whisper, Qwen, Kokoro, study calls, session completion/retry, recordings, and research export are not implemented. This is not ready for real participants or public deployment.
 
 The architecture decision is: KMP mobile client → FastAPI on a long-running RunPod Pod for control; mobile and Pipecat (also on RunPod) each join a LiveKit Cloud room for WebRTC media. No public inbound UDP is required on the RunPod Pod. PostgreSQL stores study metadata; audio files will be separate. The Obsidian concept/requirements docs remain the source of product behavior.
 
@@ -20,7 +20,18 @@ uv run uvicorn app.main:app --reload
 
 `GET /health` checks the DB. `POST /v1/study/participants` with `{"accepted":true}` returns a pseudonymous participant ID, an **opaque resume token shown only once**, and public Sesi 1/2 statuses (no EOT labels). `GET /v1/study/me` requires `Authorization: Bearer <resume_token>` and returns the same participant/progress. Do not log the token or use participant IDs as authentication.
 
-`POST /v1/practice/calls` takes `{}` without a study token or research consent. The request does **not** accept an EOT method; the backend passes `adaptive` to the practice voice service. The API does not use the enrollment path or write study records. By default it returns `503 Practice calls are unavailable`: no LiveKit/Pipecat service is installed or configured, and it does **not** issue fake call credentials. A future `PracticeCallStarter` must only return a room URL and short-lived, room-scoped client token after the AI tutor is ready; if setup fails it must clean up and report unavailability. Before enabling anonymous call provisioning, add resource limits and test real calls on the deployment network. Practice audio/history must stay out of research storage and exports.
+`POST /v1/practice/calls` takes `{}` without a study token or research consent. The request does **not** accept an EOT method; the backend fixes the method to `adaptive`. The API does not use the enrollment path or write study records. Without LiveKit configuration or the `calls` extra, it returns `503` and issues no credentials. With both available, it returns `call_id`, `room_url`, and a short-lived, room-scoped `join_token` **only after Pipecat joins the room**. `GET /v1/practice/readiness` checks LiveKit API connectivity and available call capacity, not whether the tutor can answer. Both endpoints fail closed when unavailable. Practice audio/history must stay out of research storage and exports.
+
+### LiveKit practice transport (backend only)
+
+Provide `LIVEKIT_URL` (a `wss://` URL), `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` in your untracked `.env` or runtime environment. They remain server-side; the client only receives its restricted join token. The `.env` file is not automatically loaded by uvicorn:
+
+```sh
+uv sync --group dev --extra calls
+uv run --extra calls --env-file .env uvicorn app.main:app --reload
+```
+
+The transport-only bot joins the room before the start request succeeds. Rooms are removed if bot setup fails, no client joins within 60 seconds, the client disconnects, or the call reaches its 20-minute operational limit. This single-process implementation allows at most two concurrent practice calls; **do not expose anonymous provisioning publicly** without durable resource/rate limits and deployment testing. Call readiness must also be tested from the actual RunPod Pod to LiveKit Cloud (including UDP/TCP/TURN fallback), and the mobile microphone/connection flow is separate work.
 
 The consent text/version and privacy policy must be approved **before** any real participant uses the study enrollment endpoint. A user-facing study explanation and consent are not provided by this backend alone.
 
