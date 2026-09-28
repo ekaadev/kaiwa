@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from app.livekit_practice import LiveKitGateway, LiveKitPracticeStarter, livekit_practice_from_env
-from app.practice import PracticeUnavailable
+from app.practice import PracticeIssue, PracticeUnavailable
 
 
 class FakeGateway:
@@ -42,7 +42,7 @@ def test_returns_credentials_only_after_bot_connects_and_cleans_on_shutdown(monk
     async def scenario():
         gateway = FakeGateway()
         starter = LiveKitPracticeStarter(gateway, max_active_calls=1)
-        assert await starter.ready()
+        assert (await starter.ready()).ready
 
         call = await starter.start(eot_method="adaptive")
 
@@ -51,11 +51,16 @@ def test_returns_credentials_only_after_bot_connects_and_cleans_on_shutdown(monk
         assert call.join_token == "client-token"
         assert gateway.created == [f"practice-{call.call_id.hex}"]
         assert gateway.tokens == [(gateway.created[0], True), (gateway.created[0], False)]
-        assert not await starter.ready()
+        assert (await starter.ready()).reason == PracticeIssue.CAPACITY_FULL
+
+        with pytest.raises(PracticeUnavailable) as exc:
+            await starter.start(eot_method="adaptive")
+        assert exc.value.reason == PracticeIssue.CAPACITY_FULL
+        assert gateway.created == [f"practice-{call.call_id.hex}"]
 
         await starter.aclose()
         assert gateway.deleted == gateway.created
-        assert await starter.ready()
+        assert (await starter.ready()).ready
 
     asyncio.run(scenario())
 
@@ -75,7 +80,7 @@ def test_bot_failure_does_not_return_a_client_token_and_deletes_room(monkeypatch
 
         assert gateway.deleted == gateway.created
         assert gateway.tokens == [(gateway.created[0], True)]
-        assert await starter.ready()
+        assert (await starter.ready()).ready
 
     asyncio.run(scenario())
 
@@ -95,7 +100,7 @@ def test_bot_join_timeout_removes_room_and_releases_capacity(monkeypatch):
             await starter.start(eot_method="adaptive")
 
         assert gateway.deleted == gateway.created
-        assert await starter.ready()
+        assert (await starter.ready()).ready
 
     asyncio.run(scenario())
 
@@ -115,7 +120,36 @@ def test_room_creation_failure_cannot_issue_tokens_or_reserve_capacity():
 
         assert gateway.tokens == []
         assert gateway.deleted == gateway.created
-        assert await starter.ready()
+        assert (await starter.ready()).ready
+
+    asyncio.run(scenario())
+
+
+def test_livekit_api_failure_reports_service_unavailable_without_creating_room():
+    async def scenario():
+        gateway = FakeGateway()
+        gateway.available = False
+        starter = LiveKitPracticeStarter(gateway)
+
+        assert (await starter.ready()).reason == PracticeIssue.SERVICE_UNAVAILABLE
+        assert gateway.created == []
+
+    asyncio.run(scenario())
+
+
+def test_readiness_times_out_if_livekit_api_never_responds(monkeypatch):
+    class HangingGateway(FakeGateway):
+        async def ready(self):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.livekit_practice.READINESS_TIMEOUT_SECONDS", 0.01)
+
+    async def scenario():
+        gateway = HangingGateway()
+        starter = LiveKitPracticeStarter(gateway)
+
+        assert (await starter.ready()).reason == PracticeIssue.SERVICE_UNAVAILABLE
+        assert gateway.created == []
 
     asyncio.run(scenario())
 

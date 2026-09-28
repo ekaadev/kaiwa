@@ -10,11 +10,12 @@ from datetime import timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
-from app.practice import PracticeConnection, PracticeUnavailable
+from app.practice import PracticeConnection, PracticeIssue, PracticeReadiness, PracticeUnavailable
 
 logger = logging.getLogger(__name__)
 
 BOT_JOIN_TIMEOUT_SECONDS = 20
+READINESS_TIMEOUT_SECONDS = 5
 CLIENT_JOIN_TIMEOUT_SECONDS = 60
 MAX_CALL_SECONDS = 20 * 60
 TOKEN_TTL = timedelta(minutes=5)
@@ -150,11 +151,18 @@ class LiveKitPracticeStarter:
         self._active: dict[UUID, asyncio.Task | None] = {}
         self._lock = asyncio.Lock()
 
-    async def ready(self) -> bool:
+    async def ready(self) -> PracticeReadiness:
         async with self._lock:
             if len(self._active) >= self._max_active_calls:
-                return False
-        return await self.gateway.ready()
+                return PracticeReadiness(PracticeIssue.CAPACITY_FULL)
+        try:
+            reachable = await asyncio.wait_for(
+                self.gateway.ready(), timeout=READINESS_TIMEOUT_SECONDS
+            )
+        except Exception:
+            logger.warning("Practice connectivity check failed")
+            reachable = False
+        return PracticeReadiness(None if reachable else PracticeIssue.SERVICE_UNAVAILABLE)
 
     async def start(self, *, eot_method: Literal["adaptive"]) -> PracticeConnection:
         if eot_method != "adaptive":
@@ -164,7 +172,7 @@ class LiveKitPracticeStarter:
         room_name = f"practice-{call_id.hex}"
         async with self._lock:
             if len(self._active) >= self._max_active_calls:
-                raise PracticeUnavailable()
+                raise PracticeUnavailable(PracticeIssue.CAPACITY_FULL)
             self._active[call_id] = None
 
         bot_task = None

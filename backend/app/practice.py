@@ -1,12 +1,31 @@
 """Boundary for anonymous practice calls, separate from study enrollment."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal, Protocol
 from uuid import UUID
 
 
+class PracticeIssue(StrEnum):
+    SERVICE_UNAVAILABLE = "service_unavailable"
+    CAPACITY_FULL = "capacity_full"
+
+
 class PracticeUnavailable(Exception):
     """A voice service cannot start a real practice call right now."""
+
+    def __init__(self, reason: PracticeIssue = PracticeIssue.SERVICE_UNAVAILABLE):
+        self.reason = reason
+        super().__init__(reason.value)
+
+
+@dataclass(frozen=True)
+class PracticeReadiness:
+    reason: PracticeIssue | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.reason is None
 
 
 @dataclass(frozen=True)
@@ -17,8 +36,8 @@ class PracticeConnection:
 
 
 class PracticeCallStarter(Protocol):
-    async def ready(self) -> bool:
-        """Check capacity and external transport connectivity without creating a room."""
+    async def ready(self) -> PracticeReadiness:
+        """Check capacity and connectivity without creating a room or promising a working tutor."""
         ...
 
     async def start(self, *, eot_method: Literal["adaptive"]) -> PracticeConnection:

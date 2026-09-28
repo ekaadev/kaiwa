@@ -1,5 +1,6 @@
 """Control-plane API. WebRTC media will join LiveKit, not this HTTP server."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
@@ -13,10 +14,24 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.livekit_practice import livekit_practice_from_env
 from app.models import AllocationCounter, Base, Participant
-from app.practice import PracticeCallStarter, PracticeUnavailable
+from app.practice import PracticeCallStarter, PracticeIssue, PracticeUnavailable
 from app.study import enroll, find_by_token
 
 bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
+
+PRACTICE_MESSAGES = {
+    PracticeIssue.SERVICE_UNAVAILABLE: "Practice calls are unavailable",
+    PracticeIssue.CAPACITY_FULL: "Practice calls are at capacity",
+}
+
+
+def practice_unavailable(issue: PracticeIssue = PracticeIssue.SERVICE_UNAVAILABLE) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"code": issue.value, "message": PRACTICE_MESSAGES[issue]},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 class ConsentRequest(BaseModel):
@@ -123,10 +138,18 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/v1/practice/readiness")
-    async def practice_readiness(request: Request):
+    async def practice_readiness(request: Request, response: Response):
         starter = request.app.state.practice_starter
-        if starter is None or not await starter.ready():
-            raise HTTPException(status_code=503, detail="Practice calls are unavailable")
+        if starter is None:
+            raise practice_unavailable()
+        try:
+            readiness = await starter.ready()
+        except Exception as exc:
+            logger.warning("Practice readiness check failed")
+            raise practice_unavailable() from exc
+        if not readiness.ready:
+            raise practice_unavailable(readiness.reason or PracticeIssue.SERVICE_UNAVAILABLE)
+        response.headers["Cache-Control"] = "no-store"
         return {"ready": True}
 
     @app.post("/v1/practice/calls", response_model=PracticeCallView, status_code=201)
@@ -135,11 +158,14 @@ def create_app(
     ) -> PracticeCallView:
         starter = request.app.state.practice_starter
         if starter is None:
-            raise HTTPException(status_code=503, detail="Practice calls are unavailable")
+            raise practice_unavailable()
         try:
             connection = await starter.start(eot_method="adaptive")
         except PracticeUnavailable as exc:
-            raise HTTPException(status_code=503, detail="Practice calls are unavailable") from exc
+            raise practice_unavailable(exc.reason) from exc
+        except Exception as exc:
+            logger.warning("Practice call setup failed")
+            raise practice_unavailable() from exc
         response.headers["Cache-Control"] = "no-store"
         return PracticeCallView(
             call_id=connection.call_id,
