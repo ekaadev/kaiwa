@@ -16,6 +16,7 @@ from app.livekit_practice import livekit_practice_from_env
 from app.models import AllocationCounter, Base, Participant
 from app.practice import PracticeCallStarter, PracticeIssue, PracticeUnavailable
 from app.study import enroll, find_by_token
+from app.study_calls import StudyCallConflict, StudyCallStarter, finish, reserve
 
 bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ class PracticeStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class StudyStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class PracticeCallView(BaseModel):
     call_id: UUID
     room_url: str
@@ -74,7 +79,11 @@ def public_view(participant: Participant) -> ParticipantView:
                 ordinal=session.ordinal,
                 status=session.status,
                 available=(session.ordinal == 1 or sessions[0].status == "completed")
-                and session.status != "completed",
+                and session.status != "completed"
+                and not any(
+                    a.status in ("starting", "active", "awaiting_evidence")
+                    for a in session.attempts
+                ),
             )
             for session in sessions
         ],
@@ -99,7 +108,10 @@ def get_current_participant(
 
 
 def create_app(
-    engine: Engine | None = None, *, practice_starter: PracticeCallStarter | None = None
+    engine: Engine | None = None,
+    *,
+    practice_starter: PracticeCallStarter | None = None,
+    study_starter: StudyCallStarter | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -109,14 +121,24 @@ def create_app(
         )
         selected_starter = practice_starter if practice_starter is not None else owned_starter
         app.state.practice_starter = selected_starter
+        app.state.study_starter = study_starter
         selected_engine = engine
         if selected_engine is None:
             url = os.getenv("DATABASE_URL")
             if not url:
                 raise RuntimeError("DATABASE_URL is required; see .env.example")
             selected_engine = create_engine(url, pool_pre_ping=True)
-        # Bootstrap only. Replace create_all with versioned migrations before research deployment.
-        Base.metadata.create_all(selected_engine)
+        if owns_engine:
+            # Never alter a deployment schema implicitly during application startup.
+            with selected_engine.connect() as connection:
+                revision = connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar()
+                if revision != "0002_study_attempts":
+                    raise RuntimeError("Run database migrations before starting the API")
+        else:
+            # Injected engines are isolated test fixtures; deployments use migrations above.
+            Base.metadata.create_all(selected_engine)
         app.state.session_factory = sessionmaker(selected_engine, expire_on_commit=False)
         with app.state.session_factory() as db:
             if db.get(AllocationCounter, 1) is None:
@@ -190,6 +212,52 @@ def create_app(
         participant: Annotated[Participant, Depends(get_current_participant)],
     ) -> ParticipantView:
         return public_view(participant)
+
+    @app.post(
+        "/v1/study/sessions/{ordinal}/calls", response_model=PracticeCallView, status_code=201
+    )
+    async def start_study_call(
+        ordinal: int,
+        _: StudyStartRequest,
+        request: Request,
+        response: Response,
+        participant: Annotated[Participant, Depends(get_current_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ) -> PracticeCallView:
+        starter = request.app.state.study_starter
+        if starter is None:
+            raise HTTPException(status_code=503, detail="Study calls are unavailable")
+        key = request.headers.get("Idempotency-Key", "")
+        if not (8 <= len(key) <= 128 and key.isascii() and key.isprintable()):
+            raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+        try:
+            attempt, created = reserve(db, participant.id, ordinal, key)
+        except StudyCallConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not created and attempt.status not in ("starting", "active"):
+            raise HTTPException(status_code=409, detail="This request has already ended")
+        try:
+            if created:
+                connection = await starter.start(
+                    attempt_id=attempt.id, method=attempt.session.method
+                )
+                # A transport can terminate while setup is still returning.
+                db.refresh(attempt)
+                if attempt.status != "starting":
+                    raise RuntimeError("Call ended during setup")
+                attempt.status = "active"
+                db.commit()
+            else:
+                connection = await starter.reconnect(attempt_id=attempt.id)
+        except Exception as exc:
+            if created:
+                finish(db, attempt.id, "setup_failed")
+            logger.warning("Study call setup failed")
+            raise HTTPException(status_code=503, detail="Study calls are unavailable") from exc
+        response.headers["Cache-Control"] = "no-store"
+        return PracticeCallView(
+            call_id=attempt.id, room_url=connection.room_url, join_token=connection.join_token
+        )
 
     return app
 

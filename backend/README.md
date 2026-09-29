@@ -1,6 +1,6 @@
 # AI Conversation — backend foundation
 
-**Scope so far:** a FastAPI control API for anonymous study enrollment, balanced fixed/adaptive allocation, and read-only study resumption. Anonymous practice calls have an opt-in Pipecat speech pipeline using local Whisper small multilingual, Smart Turn v3.2, Qwen3-1.7B via a self-hosted OpenAI-compatible endpoint, and Kokoro-82M Japanese. The full model/audio pipeline has **not yet been validated with real inference**; without all model assets and an accessible inference server the API fails closed. Study calls, session completion/retry, recordings, and research export are not implemented. This is not ready for real participants or public deployment.
+**Scope so far:** a FastAPI control API for anonymous study enrollment, balanced fixed/adaptive allocation, and study attempt lifecycle rules. Anonymous practice calls have an opt-in Pipecat speech pipeline using local Whisper small multilingual, Smart Turn v3.2, Qwen3-1.7B via a self-hosted OpenAI-compatible endpoint, and Kokoro-82M Japanese. The full model/audio pipeline has **not yet been validated with real inference**; without all model assets and an accessible inference server the API fails closed. A production study LiveKit adapter, trusted media/evidence integration, recordings, mobile client, and research export are **not implemented**. Study calls therefore return 503 in normal deployment and cannot complete yet. This is not ready for real participants or public deployment.
 
 The architecture decision is: KMP mobile client → FastAPI on a long-running RunPod Pod for control; mobile and Pipecat (also on RunPod) each join a LiveKit Cloud room for WebRTC media. No public inbound UDP is required on the RunPod Pod. PostgreSQL stores study metadata; audio files will be separate. The Obsidian concept/requirements docs remain the source of product behavior.
 
@@ -15,10 +15,15 @@ uv sync --group dev
 docker compose up -d postgres
 export DATABASE_URL='postgresql+psycopg://conversation:local-dev-only@localhost:55432/conversation'
 export STUDY_CONSENT_VERSION='draft-v1'
+uv run alembic upgrade head  # new database only; see existing-database note below
 uv run uvicorn app.main:app --reload
 ```
 
 `GET /health` checks the DB. `POST /v1/study/participants` with `{"accepted":true}` returns a pseudonymous participant ID, an **opaque resume token shown only once**, and public Sesi 1/2 statuses (no EOT labels). `GET /v1/study/me` requires `Authorization: Bearer <resume_token>` and returns the same participant/progress. Do not log the token or use participant IDs as authentication.
+
+The study attempt API is `POST /v1/study/sessions/{ordinal}/calls` with `{}`, requiring the bearer resume token and an `Idempotency-Key` header (8–128 printable ASCII characters, freshly generated for each new attempt). It does not accept a method from the client. A repeated key does not create a second attempt; a new key is needed to retry a failed call. Sesi 2 is locked until Sesi 1 is valid. **No study transport is configured in deployment yet**: this API returns 503 without making an attempt. Its injected transport seam and completion rules are exercised by tests only. Trusted server code must report media connection/disconnection, termination, then final durable evidence; the client cannot declare its own attempt complete. Only a normal end with at least 120 seconds of connected media followed by saved evidence completes a session. Calls waiting for evidence remain locked for up to 21 minutes before a new attempt can replace them; interrupted calls remain retryable.
+
+Database schemas now use Alembic migrations; deployment startup requires revision `0002_study_attempts` and will not create tables. For a **new** database, run `uv run alembic upgrade head` with `DATABASE_URL` set before starting the API. For an **existing** database created by the old startup bootstrap, back it up, inspect that its schema matches migration `0001_study_foundation`, then run `uv run alembic stamp 0001_study_foundation` and `uv run alembic upgrade head`. Do not run the initial migration directly over existing tables or stamp an unverified database. Injected engines in isolated tests still use `create_all` for test fixtures.
 
 `POST /v1/practice/calls` takes `{}` without a study token or research consent. The request does **not** accept an EOT method; the backend fixes the method to `adaptive`. The API does not use the enrollment path or write study records. Without LiveKit and tutor configuration or both the `calls` and `tutor` extras, it returns `503` and issues no credentials. When configured, it returns `call_id`, `room_url`, and a short-lived, room-scoped `join_token` **only after the speech pipeline is constructed and Pipecat joins the room**. `GET /v1/practice/readiness` checks LiveKit API connectivity, available call capacity, local model files and whether the Qwen endpoint advertises the selected model; this is a preflight, not a guarantee of successful inference. Both endpoints fail closed when unavailable. Practice audio/history must stay out of research storage and exports.
 
@@ -72,7 +77,7 @@ The PostgreSQL test checks that 24 simultaneous enrollments stay 12/12; it is sk
 
 ## Next implementation slices
 
-1. Add versioned PostgreSQL migrations (current table creation is a development bootstrap), durable study session/attempt lifecycle with an agreed definition of valid completion, and operator-only participant handoff on shared devices.
+1. Connect the durable study attempt lifecycle to a trusted study LiveKit transport and evidence writer. Do not enable session completion until normal-end, media timing, and required evidence are verified end-to-end; add operator-only participant handoff on shared devices.
 2. Add short-lived LiveKit room credentials issued only for the assigned session; start Pipecat `LiveKitTransport` joining the same room, without LiveKit Agents worker registration; test RunPod outbound UDP/TCP/TURN connectivity.
 3. Integrate fixed/adaptive EOT, speech pipeline, barge-in, recording and event/timestamp correlation; keep normal practice calls out of research data.
 4. Add protected audio storage, operator access, retention/deletion policy, and client-side KMP LiveKit adapters for Android/iOS. Never put LiveKit API secrets in mobile clients.
