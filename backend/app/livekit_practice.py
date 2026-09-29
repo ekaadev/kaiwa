@@ -4,9 +4,10 @@ import asyncio
 import logging
 import os
 from datetime import timedelta
-from typing import Literal
+from typing import Any, Awaitable, Callable, Literal
 from uuid import UUID, uuid4
 
+from app.call_capacity import CallCapacity
 from app.practice import PracticeConnection, PracticeIssue, PracticeReadiness, PracticeUnavailable
 from app.tutor import TutorConfig, build_tutor_processors
 
@@ -76,15 +77,35 @@ class LiveKitGateway:
 
 
 async def run_transport_bot(
-    url: str, token: str, room_name: str, ready: asyncio.Event, tutor: TutorConfig | None = None
+    url: str,
+    token: str,
+    room_name: str,
+    ready: asyncio.Event,
+    tutor: TutorConfig | None = None,
+    *,
+    eot_method: Literal["fixed", "adaptive"] = "adaptive",
+    on_audio_frame: Callable[[Any], Awaitable[None]] | None = None,
+    on_audio_lost: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Join and hold the room with a prepared tutor pipeline."""
+    from pipecat.frames.frames import UserAudioRawFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
     from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
-    processors = await asyncio.to_thread(build_tutor_processors, tutor) if tutor else []
+    processors = []
+    if tutor:
+        processors = await asyncio.to_thread(build_tutor_processors, tutor, eot_method=eot_method)
+
+    class AudioObserver(FrameProcessor):
+        async def process_frame(self, frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, UserAudioRawFrame) and on_audio_frame is not None:
+                await on_audio_frame(frame)
+            await self.push_frame(frame, direction)
+
     transport = LiveKitTransport(
         url=url,
         token=token,
@@ -95,9 +116,12 @@ async def run_transport_bot(
             audio_out_enabled=True,
         ),
     )
+    input_processors: list[FrameProcessor] = [transport.input()]
+    if on_audio_frame is not None:
+        input_processors.append(AudioObserver())
     pipeline = Pipeline(
-        [transport.input(), *processors[:-1], transport.output(), processors[-1]]
-        if processors else [transport.input(), transport.output()]
+        [*input_processors, *processors[:-1], transport.output(), processors[-1]]
+        if processors else [*input_processors, transport.output()]
     )
     task = PipelineTask(
         pipeline,
@@ -124,7 +148,14 @@ async def run_transport_bot(
 
     @transport.event_handler("on_participant_disconnected")
     async def on_participant_disconnected(_transport, _participant_id):
+        if on_audio_lost is not None:
+            await on_audio_lost()
         asyncio.create_task(stop_once())
+
+    @transport.event_handler("on_audio_track_unsubscribed")
+    async def on_audio_track_unsubscribed(_transport, _participant_id):
+        if on_audio_lost is not None:
+            await on_audio_lost()
 
     @transport.event_handler("on_disconnected")
     async def on_disconnected(_transport):
@@ -155,10 +186,12 @@ class LiveKitPracticeStarter:
         *,
         max_active_calls: int = 2,
         tutor: TutorConfig | None = None,
+        capacity: CallCapacity | None = None,
     ):
         self.gateway = gateway
         self.tutor = tutor
         self._max_active_calls = max_active_calls
+        self.capacity = capacity
         self._active: dict[UUID, asyncio.Task | None] = {}
         self._lock = asyncio.Lock()
 
@@ -166,6 +199,8 @@ class LiveKitPracticeStarter:
         async with self._lock:
             if len(self._active) >= self._max_active_calls:
                 return PracticeReadiness(PracticeIssue.CAPACITY_FULL)
+        if self.capacity is not None and not await self.capacity.available():
+            return PracticeReadiness(PracticeIssue.CAPACITY_FULL)
         if self.tutor is not None and not await self.tutor.ready():
             return PracticeReadiness(PracticeIssue.SERVICE_UNAVAILABLE)
         try:
@@ -187,6 +222,8 @@ class LiveKitPracticeStarter:
         room_name = f"practice-{call_id.hex}"
         async with self._lock:
             if len(self._active) >= self._max_active_calls:
+                raise PracticeUnavailable(PracticeIssue.CAPACITY_FULL)
+            if self.capacity is not None and not await self.capacity.acquire():
                 raise PracticeUnavailable(PracticeIssue.CAPACITY_FULL)
             self._active[call_id] = None
 
@@ -228,6 +265,8 @@ class LiveKitPracticeStarter:
             await self._delete_room(room_name)
             async with self._lock:
                 self._active.pop(call_id, None)
+                if self.capacity is not None:
+                    await self.capacity.release()
 
     async def _wait_for_bot(self, bot_task: asyncio.Task, connected: asyncio.Event) -> None:
         wait_task = asyncio.create_task(connected.wait())
@@ -247,10 +286,14 @@ class LiveKitPracticeStarter:
         if bot_task is not None:
             bot_task.cancel()
             await asyncio.gather(bot_task, return_exceptions=True)
-        else:
+        async with self._lock:
+            still_reserved = call_id in self._active
+            if still_reserved:
+                self._active.pop(call_id)
+                if self.capacity is not None:
+                    await self.capacity.release()
+        if still_reserved:
             await self._delete_room(room_name)
-            async with self._lock:
-                self._active.pop(call_id, None)
 
     async def _delete_room(self, name: str) -> None:
         try:
@@ -266,7 +309,9 @@ class LiveKitPracticeStarter:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def livekit_practice_from_env() -> LiveKitPracticeStarter | None:
+def livekit_practice_from_env(
+    capacity: CallCapacity | None = None,
+) -> LiveKitPracticeStarter | None:
     url = os.getenv("LIVEKIT_URL", "").strip()
     key = os.getenv("LIVEKIT_API_KEY", "").strip()
     secret = os.getenv("LIVEKIT_API_SECRET", "").strip()
@@ -280,4 +325,4 @@ def livekit_practice_from_env() -> LiveKitPracticeStarter | None:
         from pipecat.transports.livekit.transport import LiveKitTransport  # noqa: F401
     except Exception:
         return None
-    return LiveKitPracticeStarter(LiveKitGateway(url, key, secret), tutor=tutor)
+    return LiveKitPracticeStarter(LiveKitGateway(url, key, secret), tutor=tutor, capacity=capacity)

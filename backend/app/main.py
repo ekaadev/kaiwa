@@ -9,11 +9,13 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.call_capacity import CallCapacity
 from app.livekit_practice import livekit_practice_from_env
-from app.models import AllocationCounter, Base, Participant
+from app.livekit_study import livekit_study_from_env
+from app.models import AllocationCounter, Base, Participant, StudyAttempt, StudySession
 from app.practice import PracticeCallStarter, PracticeIssue, PracticeUnavailable
 from app.study import enroll, find_by_token
 from app.study_calls import StudyCallConflict, StudyCallStarter, finish, reserve
@@ -116,12 +118,12 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         owns_engine = engine is None
-        owned_starter = (
-            livekit_practice_from_env() if practice_starter is None and owns_engine else None
-        )
+        capacity = CallCapacity()
+        owned_starter = None
+        if practice_starter is None and owns_engine:
+            owned_starter = livekit_practice_from_env(capacity)
         selected_starter = practice_starter if practice_starter is not None else owned_starter
         app.state.practice_starter = selected_starter
-        app.state.study_starter = study_starter
         selected_engine = engine
         if selected_engine is None:
             url = os.getenv("DATABASE_URL")
@@ -140,6 +142,12 @@ def create_app(
             # Injected engines are isolated test fixtures; deployments use migrations above.
             Base.metadata.create_all(selected_engine)
         app.state.session_factory = sessionmaker(selected_engine, expire_on_commit=False)
+        owned_study = (
+            livekit_study_from_env(app.state.session_factory, capacity)
+            if study_starter is None and owns_engine
+            else None
+        )
+        app.state.study_starter = study_starter if study_starter is not None else owned_study
         with app.state.session_factory() as db:
             if db.get(AllocationCounter, 1) is None:
                 db.add(AllocationCounter(id=1, fixed_first=0, adaptive_first=0))
@@ -149,6 +157,8 @@ def create_app(
         finally:
             if owned_starter is not None:
                 await owned_starter.aclose()
+            if owned_study is not None:
+                await owned_study.aclose()
             if owns_engine:
                 selected_engine.dispose()
 
@@ -258,6 +268,25 @@ def create_app(
         return PracticeCallView(
             call_id=attempt.id, room_url=connection.room_url, join_token=connection.join_token
         )
+
+    @app.post("/v1/study/calls/{call_id}/end", status_code=204)
+    async def end_study_call(
+        call_id: UUID,
+        request: Request,
+        participant: Annotated[Participant, Depends(get_current_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ) -> Response:
+        attempt = db.scalar(
+            select(StudyAttempt)
+            .join(StudySession)
+            .where(StudyAttempt.id == call_id, StudySession.participant_id == participant.id)
+        )
+        if attempt is None or attempt.status != "active":
+            raise HTTPException(status_code=404, detail="Active call not found")
+        starter = request.app.state.study_starter
+        if starter is None or not await starter.end(attempt_id=call_id):
+            raise HTTPException(status_code=409, detail="Call is no longer active")
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
     return app
 

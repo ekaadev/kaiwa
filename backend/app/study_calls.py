@@ -20,6 +20,8 @@ class StudyCallStarter(Protocol):
 
     async def reconnect(self, *, attempt_id: UUID) -> PracticeConnection: ...
 
+    async def end(self, *, attempt_id: UUID) -> bool: ...
+
 
 class StudyCallConflict(Exception):
     pass
@@ -87,11 +89,20 @@ def connected(db: Session, attempt_id: UUID, at: datetime | None = None) -> None
         db.commit()
 
 
-def disconnected(db: Session, attempt_id: UUID, at: datetime | None = None) -> None:
+def disconnected(
+    db: Session, attempt_id: UUID, at: datetime | None = None, *, received_ms: int | None = None
+) -> None:
     attempt = db.get(StudyAttempt, attempt_id, with_for_update=True)
     if attempt is not None and attempt.status == "active" and attempt.connected_at is not None:
         end = at or now()
-        attempt.media_ms += max(0, int((end - utc(attempt.connected_at)).total_seconds() * 1000))
+        # The LiveKit adapter supplies the duration of actual received PCM frames.
+        # Other trusted callers may use the connected interval when no samples are supplied.
+        duration = (
+            received_ms
+            if received_ms is not None
+            else int((end - utc(attempt.connected_at)).total_seconds() * 1000)
+        )
+        attempt.media_ms += max(0, duration)
         attempt.connected_at = None
         db.commit()
 
@@ -122,7 +133,8 @@ def finish(db: Session, attempt_id: UUID, reason: str, at: datetime | None = Non
         return
     end = at or now()
     if attempt.connected_at is not None:
-        attempt.media_ms += max(0, int((end - utc(attempt.connected_at)).total_seconds() * 1000))
+        # Only an observed media disconnect can add duration. A termination
+        # event by itself is not proof that audio continued until this instant.
         attempt.connected_at = None
     attempt.ended_at = end
     attempt.end_reason = reason

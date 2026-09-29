@@ -110,6 +110,7 @@ def test_duration_excludes_disconnections_and_evidence_is_required(study):
         connected(db, call, t)
         disconnected(db, call, t + timedelta(seconds=70))
         connected(db, call, t + timedelta(seconds=100))
+        disconnected(db, call, t + timedelta(seconds=149))
         finish(db, call, "normal", t + timedelta(seconds=149))
         attempt = db.get(StudyAttempt, call)
         assert attempt is not None
@@ -119,6 +120,7 @@ def test_duration_excludes_disconnections_and_evidence_is_required(study):
     second = UUID(start(client, auth, key="attempt-key-0002").json()["call_id"])
     with Session(engine) as db:
         connected(db, second, t)
+        disconnected(db, second, t + timedelta(seconds=121))
         finish(db, second, "normal", t + timedelta(seconds=121))
         attempt = db.get(StudyAttempt, second)
         assert attempt is not None
@@ -129,6 +131,7 @@ def test_duration_excludes_disconnections_and_evidence_is_required(study):
     third = UUID(start(client, auth, key="attempt-key-0003").json()["call_id"])
     with Session(engine) as db:
         connected(db, third, t)
+        disconnected(db, third, t + timedelta(seconds=120))
         finish(db, third, "normal", t + timedelta(seconds=120))
         attempt = db.get(StudyAttempt, third)
         assert attempt is not None
@@ -144,6 +147,7 @@ def test_duration_excludes_disconnections_and_evidence_is_required(study):
     second_session = UUID(start(client, auth, 2, "second-session-01").json()["call_id"])
     with Session(engine) as db:
         connected(db, second_session, t)
+        disconnected(db, second_session, t + timedelta(seconds=120))
         finish(db, second_session, "normal", t + timedelta(seconds=120))
         evidence_saved(db, second_session)
     assert all(
@@ -204,3 +208,17 @@ def test_abandoned_call_is_failed_before_next_reservation(study):
         assert attempt is not None
         assert attempt.status == "failed"
         assert attempt.end_reason == "interrupted"
+
+
+def test_end_event_alone_never_proves_two_minutes_of_audio(study):
+    client, engine, _, auth = study
+    attempt_id = UUID(start(client, auth).json()["call_id"])
+    with Session(engine) as db:
+        connected(db, attempt_id, now() - timedelta(minutes=3))
+        finish(db, attempt_id, "normal")
+        evidence_saved(db, attempt_id)
+        attempt = db.get(StudyAttempt, attempt_id)
+        assert attempt is not None
+        assert attempt.media_ms == 0
+        assert attempt.status == "failed"
+    assert client.get("/v1/study/me", headers=auth).json()["sessions"][0]["available"]
