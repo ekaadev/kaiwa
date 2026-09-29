@@ -85,6 +85,46 @@ def test_bot_failure_does_not_return_a_client_token_and_deletes_room(monkeypatch
     asyncio.run(scenario())
 
 
+def test_tutor_not_ready_fails_before_room_is_created():
+    class UnavailableTutor:
+        async def ready(self):
+            return False
+
+    async def scenario():
+        gateway = FakeGateway()
+        starter = LiveKitPracticeStarter(gateway, tutor=UnavailableTutor())
+
+        assert (await starter.ready()).reason == PracticeIssue.SERVICE_UNAVAILABLE
+        with pytest.raises(PracticeUnavailable):
+            await starter.start(eot_method="adaptive")
+        assert gateway.created == gateway.deleted == gateway.tokens == []
+
+    asyncio.run(scenario())
+
+
+def test_tutor_setup_failure_deletes_room_before_issuing_client_token(monkeypatch):
+    class AvailableTutor:
+        async def ready(self):
+            return True
+
+    async def failed_bot(url, token, name, ready, tutor=None):
+        raise RuntimeError("tutor models could not be loaded")
+
+    monkeypatch.setattr("app.livekit_practice.run_transport_bot", failed_bot)
+
+    async def scenario():
+        gateway = FakeGateway()
+        starter = LiveKitPracticeStarter(gateway, tutor=AvailableTutor())
+
+        with pytest.raises(PracticeUnavailable):
+            await starter.start(eot_method="adaptive")
+
+        assert gateway.deleted == gateway.created
+        assert gateway.tokens == [(gateway.created[0], True)]
+
+    asyncio.run(scenario())
+
+
 def test_bot_join_timeout_removes_room_and_releases_capacity(monkeypatch):
     async def never_joins(url, token, name, ready):
         await asyncio.Event().wait()
@@ -158,6 +198,15 @@ def test_missing_livekit_configuration_disables_practice(monkeypatch):
     monkeypatch.delenv("LIVEKIT_API_SECRET", raising=False)
     monkeypatch.setenv("LIVEKIT_URL", "wss://example.livekit.cloud")
     monkeypatch.setenv("LIVEKIT_API_KEY", "test-key")
+
+    assert livekit_practice_from_env() is None
+
+
+def test_livekit_alone_does_not_enable_a_silent_practice_bot(monkeypatch):
+    monkeypatch.setenv("LIVEKIT_URL", "wss://example.livekit.cloud")
+    monkeypatch.setenv("LIVEKIT_API_KEY", "test-key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret")
+    monkeypatch.delenv("TUTOR_LLM_BASE_URL", raising=False)
 
     assert livekit_practice_from_env() is None
 

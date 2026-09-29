@@ -1,7 +1,4 @@
-"""Provision anonymous LiveKit calls with a transport-only Pipecat bot.
-
-Speech recognition, EOT, LLM, and TTS are added by the later tutor feature.
-"""
+"""Provision anonymous LiveKit calls and join a Pipecat tutor before issuing credentials."""
 
 import asyncio
 import logging
@@ -11,6 +8,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from app.practice import PracticeConnection, PracticeIssue, PracticeReadiness, PracticeUnavailable
+from app.tutor import TutorConfig, build_tutor_processors
 
 logger = logging.getLogger(__name__)
 
@@ -77,24 +75,30 @@ class LiveKitGateway:
         )
 
 
-async def run_transport_bot(url: str, token: str, room_name: str, ready: asyncio.Event) -> None:
-    """Join and hold a LiveKit room; don't record or respond to speech yet."""
+async def run_transport_bot(
+    url: str, token: str, room_name: str, ready: asyncio.Event, tutor: TutorConfig | None = None
+) -> None:
+    """Join and hold the room with a prepared tutor pipeline."""
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
+    processors = await asyncio.to_thread(build_tutor_processors, tutor) if tutor else []
     transport = LiveKitTransport(
         url=url,
         token=token,
         room_name=room_name,
         params=LiveKitParams(
             audio_in_enabled=True,
-            audio_in_passthrough=False,
+            audio_in_passthrough=bool(tutor),
             audio_out_enabled=True,
         ),
     )
-    pipeline = Pipeline([transport.input(), transport.output()])
+    pipeline = Pipeline(
+        [transport.input(), *processors[:-1], transport.output(), processors[-1]]
+        if processors else [transport.input(), transport.output()]
+    )
     task = PipelineTask(
         pipeline,
         params=PipelineParams(audio_in_sample_rate=16000),
@@ -145,8 +149,15 @@ async def run_transport_bot(url: str, token: str, room_name: str, ready: asyncio
 class LiveKitPracticeStarter:
     """Manage anonymous practice transport without touching study records."""
 
-    def __init__(self, gateway: LiveKitGateway, *, max_active_calls: int = 2):
+    def __init__(
+        self,
+        gateway: LiveKitGateway,
+        *,
+        max_active_calls: int = 2,
+        tutor: TutorConfig | None = None,
+    ):
         self.gateway = gateway
+        self.tutor = tutor
         self._max_active_calls = max_active_calls
         self._active: dict[UUID, asyncio.Task | None] = {}
         self._lock = asyncio.Lock()
@@ -155,6 +166,8 @@ class LiveKitPracticeStarter:
         async with self._lock:
             if len(self._active) >= self._max_active_calls:
                 return PracticeReadiness(PracticeIssue.CAPACITY_FULL)
+        if self.tutor is not None and not await self.tutor.ready():
+            return PracticeReadiness(PracticeIssue.SERVICE_UNAVAILABLE)
         try:
             reachable = await asyncio.wait_for(
                 self.gateway.ready(), timeout=READINESS_TIMEOUT_SECONDS
@@ -166,6 +179,8 @@ class LiveKitPracticeStarter:
 
     async def start(self, *, eot_method: Literal["adaptive"]) -> PracticeConnection:
         if eot_method != "adaptive":
+            raise PracticeUnavailable()
+        if self.tutor is not None and not await self.tutor.ready():
             raise PracticeUnavailable()
 
         call_id = uuid4()
@@ -201,7 +216,12 @@ class LiveKitPracticeStarter:
         self, call_id: UUID, room_name: str, token: str, connected: asyncio.Event
     ) -> None:
         try:
-            await run_transport_bot(self.gateway.url, token, room_name, connected)
+            if self.tutor is None:
+                await run_transport_bot(self.gateway.url, token, room_name, connected)
+            else:
+                await run_transport_bot(
+                    self.gateway.url, token, room_name, connected, tutor=self.tutor
+                )
         except Exception:
             logger.warning("Practice transport stopped unexpectedly")
         finally:
@@ -250,11 +270,14 @@ def livekit_practice_from_env() -> LiveKitPracticeStarter | None:
     url = os.getenv("LIVEKIT_URL", "").strip()
     key = os.getenv("LIVEKIT_API_KEY", "").strip()
     secret = os.getenv("LIVEKIT_API_SECRET", "").strip()
-    if not (url.startswith("wss://") and key and secret):
+    tutor = TutorConfig.from_env()
+    if not (url.startswith("wss://") and key and secret and tutor is not None):
         return None
     try:
+        from faster_whisper import WhisperModel  # noqa: F401
         from livekit import api  # noqa: F401
+        from pipecat.services.kokoro.tts import KokoroTTSService  # noqa: F401
         from pipecat.transports.livekit.transport import LiveKitTransport  # noqa: F401
-    except ImportError:
+    except Exception:
         return None
-    return LiveKitPracticeStarter(LiveKitGateway(url, key, secret))
+    return LiveKitPracticeStarter(LiveKitGateway(url, key, secret), tutor=tutor)
