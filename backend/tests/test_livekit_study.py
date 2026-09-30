@@ -44,7 +44,9 @@ class ReadyTutor:
 def test_study_api_opens_assigned_room_and_end_keeps_session_pending(monkeypatch):
     received = []
 
-    async def bot(url, token, room, ready, *, tutor, eot_method, on_audio_frame, on_audio_lost):
+    async def bot(
+        url, token, room, ready, *, tutor, eot_method, on_audio_frame, on_audio_lost, **kwargs
+    ):
         received.append((room, eot_method))
         ready.set()
         await asyncio.Event().wait()
@@ -92,17 +94,21 @@ def test_study_api_opens_assigned_room_and_end_keeps_session_pending(monkeypatch
             "status": "pending",
             "available": True,
         }
-        assert client.post(
-            "/v1/study/sessions/2/calls",
-            json={},
-            headers={**auth, "Idempotency-Key": "study-second-session"},
-        ).status_code == 409
+        assert (
+            client.post(
+                "/v1/study/sessions/2/calls",
+                json={},
+                headers={**auth, "Idempotency-Key": "study-second-session"},
+            ).status_code
+            == 409
+        )
     engine.dispose()
 
 
 def test_practice_and_study_share_a_two_call_capacity(monkeypatch):
-    async def waiting_bot(url, token, room, ready, *, tutor, eot_method, on_audio_frame,
-                          on_audio_lost):
+    async def waiting_bot(
+        url, token, room, ready, *, tutor, eot_method, on_audio_frame, on_audio_lost, **kwargs
+    ):
         ready.set()
         await asyncio.Event().wait()
 
@@ -196,8 +202,9 @@ def test_incoming_audio_counts_frames_but_not_join_or_connection_gap(monkeypatch
 
 
 def test_study_setup_failure_cleans_room_and_does_not_return_credentials(monkeypatch):
-    async def broken_bot(url, token, room, ready, *, tutor, eot_method, on_audio_frame,
-                         on_audio_lost):
+    async def broken_bot(
+        url, token, room, ready, *, tutor, eot_method, on_audio_frame, on_audio_lost, **kwargs
+    ):
         raise RuntimeError("private model failure")
 
     monkeypatch.setattr("app.livekit_study.run_transport_bot", broken_bot)
@@ -240,7 +247,9 @@ def test_received_audio_can_await_evidence_but_cannot_complete_session(monkeypat
     monkeypatch.setattr("app.livekit_study.now", lambda: origin + timedelta(seconds=clock[0]))
     monkeypatch.setattr("app.livekit_study.monotonic", lambda: clock[0])
 
-    async def bot(url, token, room, ready, *, tutor, eot_method, on_audio_frame, on_audio_lost):
+    async def bot(
+        url, token, room, ready, *, tutor, eot_method, on_audio_frame, on_audio_lost, **kwargs
+    ):
         ready.set()
         await send_audio.wait()
         # Synthetic 16-bit mono PCM paced for 120 seconds, not a real WebRTC test.

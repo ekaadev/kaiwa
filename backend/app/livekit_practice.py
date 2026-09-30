@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from app.call_capacity import CallCapacity
 from app.practice import PracticeConnection, PracticeIssue, PracticeReadiness, PracticeUnavailable
+from app.transcripts import TranscriptRegistry
 from app.tutor import TutorConfig, build_tutor_processors
 
 logger = logging.getLogger(__name__)
@@ -86,13 +87,18 @@ async def run_transport_bot(
     eot_method: Literal["fixed", "adaptive"] = "adaptive",
     on_audio_frame: Callable[[Any], Awaitable[None]] | None = None,
     on_audio_lost: Callable[[], Awaitable[None]] | None = None,
+    transcript=None,
 ) -> None:
     """Join and hold the room with a prepared tutor pipeline."""
-    from pipecat.frames.frames import UserAudioRawFrame
+    from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame, UserAudioRawFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+    from pipecat.processors.transcript_processor import (
+        AssistantTranscriptProcessor,
+        UserTranscriptProcessor,
+    )
     from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
     processors = []
@@ -104,6 +110,12 @@ async def run_transport_bot(
             await super().process_frame(frame, direction)
             if isinstance(frame, UserAudioRawFrame) and on_audio_frame is not None:
                 await on_audio_frame(frame)
+            if (
+                isinstance(frame, UserAudioRawFrame)
+                and transcript is not None
+                and transcript.evidence
+            ):
+                await transcript.evidence.frame("user", frame)
             await self.push_frame(frame, direction)
 
     transport = LiveKitTransport(
@@ -117,11 +129,34 @@ async def run_transport_bot(
         ),
     )
     input_processors: list[FrameProcessor] = [transport.input()]
-    if on_audio_frame is not None:
+    if on_audio_frame is not None or (transcript is not None and transcript.evidence):
         input_processors.append(AudioObserver())
+    if transcript is not None and processors:
+        user_text = UserTranscriptProcessor()
+        user_text.add_event_handler("on_transcript_update", transcript.update)
+        # Final Whisper text is captured before user context aggregation.
+        processors.insert(2, user_text)
+
+    class OutputObserver(FrameProcessor):
+        async def process_frame(self, frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+            if transcript is not None and transcript.evidence is not None:
+                if isinstance(frame, OutputAudioRawFrame):
+                    await transcript.evidence.frame("assistant", frame)
+                elif isinstance(frame, InterruptionFrame):
+                    await transcript.evidence.event({"type": "interruption"})
+            await self.push_frame(frame, direction)
+
+    output_processors: list[FrameProcessor] = [transport.output()]
+    if transcript is not None:
+        output_processors.append(OutputObserver())
+        assistant_text = AssistantTranscriptProcessor()
+        assistant_text.add_event_handler("on_transcript_update", transcript.update)
+        output_processors.append(assistant_text)
     pipeline = Pipeline(
-        [*input_processors, *processors[:-1], transport.output(), processors[-1]]
-        if processors else [*input_processors, transport.output()]
+        [*input_processors, *processors[:-1], *output_processors, processors[-1]]
+        if processors
+        else [*input_processors, transport.output()]
     )
     task = PipelineTask(
         pipeline,
@@ -192,6 +227,7 @@ class LiveKitPracticeStarter:
         self.tutor = tutor
         self._max_active_calls = max_active_calls
         self.capacity = capacity
+        self.transcripts = TranscriptRegistry()
         self._active: dict[UUID, asyncio.Task | None] = {}
         self._lock = asyncio.Lock()
 
@@ -227,6 +263,7 @@ class LiveKitPracticeStarter:
                 raise PracticeUnavailable(PracticeIssue.CAPACITY_FULL)
             self._active[call_id] = None
 
+        log = self.transcripts.create(call_id)
         bot_task = None
         try:
             await self.gateway.create_room(room_name)
@@ -241,7 +278,7 @@ class LiveKitPracticeStarter:
             client_token = self.gateway.join_token(room_name, bot=False)
             if bot_task.done():
                 raise PracticeUnavailable()
-            return PracticeConnection(call_id, self.gateway.url, client_token)
+            return PracticeConnection(call_id, self.gateway.url, client_token, log.token)
         except asyncio.CancelledError:
             await self._abort(call_id, room_name, bot_task)
             raise
@@ -257,11 +294,19 @@ class LiveKitPracticeStarter:
                 await run_transport_bot(self.gateway.url, token, room_name, connected)
             else:
                 await run_transport_bot(
-                    self.gateway.url, token, room_name, connected, tutor=self.tutor
+                    self.gateway.url,
+                    token,
+                    room_name,
+                    connected,
+                    tutor=self.tutor,
+                    transcript=self.transcripts.get(call_id),
                 )
         except Exception:
             logger.warning("Practice transport stopped unexpectedly")
         finally:
+            log = self.transcripts.get(call_id)
+            if log is not None:
+                log.finish()
             await self._delete_room(room_name)
             async with self._lock:
                 self._active.pop(call_id, None)
@@ -300,6 +345,15 @@ class LiveKitPracticeStarter:
             await self.gateway.delete_room(name)
         except Exception:
             logger.warning("Could not delete a practice room")
+
+    async def end(self, call_id: UUID) -> bool:
+        async with self._lock:
+            task = self._active.get(call_id)
+            if task is None or task.done():
+                return False
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
 
     async def aclose(self) -> None:
         async with self._lock:

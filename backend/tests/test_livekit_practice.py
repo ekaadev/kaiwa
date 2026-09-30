@@ -107,7 +107,7 @@ def test_tutor_setup_failure_deletes_room_before_issuing_client_token(monkeypatc
         async def ready(self):
             return True
 
-    async def failed_bot(url, token, name, ready, tutor=None):
+    async def failed_bot(url, token, name, ready, tutor=None, **kwargs):
         raise RuntimeError("tutor models could not be loaded")
 
     monkeypatch.setattr("app.livekit_practice.run_transport_bot", failed_bot)

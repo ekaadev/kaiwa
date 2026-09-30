@@ -59,6 +59,17 @@ class StudySession(Base):
     attempts: Mapped[list["StudyAttempt"]] = relationship(back_populates="session")
 
 
+class StudyEvidence(Base):
+    __tablename__ = "study_evidence"
+    attempt_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("study_attempts.id"), primary_key=True
+    )
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class StudyAttempt(Base):
     """Server-owned call outcome; a failed call never replaces an earlier attempt."""
 

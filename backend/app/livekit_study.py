@@ -12,13 +12,16 @@ from uuid import UUID
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.call_capacity import CallCapacity
+from app.evidence import EvidenceStore
 from app.livekit_practice import (
     BOT_JOIN_TIMEOUT_SECONDS,
     LiveKitGateway,
     run_transport_bot,
 )
+from app.models import StudyAttempt, StudyEvidence
 from app.practice import PracticeConnection
 from app.study_calls import connected, disconnected, finish, now
+from app.transcripts import TranscriptRegistry
 from app.tutor import TutorConfig
 
 logger = logging.getLogger(__name__)
@@ -121,7 +124,7 @@ class ActiveStudyCall:
 
 
 class LiveKitStudyStarter:
-    """One bot and one room per durable study attempt; no research audio is stored here."""
+    """One bot and one room per attempt; configured evidence capture gates completion."""
 
     def __init__(
         self,
@@ -131,12 +134,15 @@ class LiveKitStudyStarter:
         *,
         max_active_calls: int = 2,
         capacity: CallCapacity | None = None,
+        evidence_store: EvidenceStore | None = None,
     ):
         self.gateway = gateway
         self.tutor = tutor
         self.sessions = sessions
         self.max_active_calls = max_active_calls
         self.capacity = capacity
+        self.evidence_store = evidence_store
+        self.transcripts = TranscriptRegistry()
         self._active: dict[UUID, ActiveStudyCall] = {}
         self._lock = asyncio.Lock()
 
@@ -152,13 +158,13 @@ class LiveKitStudyStarter:
             call = ActiveStudyCall(room)
             self._active[attempt_id] = call
         try:
+            evidence = self.evidence_store.begin(attempt_id) if self.evidence_store else None
+            self.transcripts.create(attempt_id, evidence)
             await self.gateway.create_room(room)
             token = self.gateway.join_token(room, bot=True)
             joined = asyncio.Event()
             eot_method = cast(Literal["fixed", "adaptive"], method)
-            call.task = asyncio.create_task(
-                self._run(attempt_id, call, token, joined, eot_method)
-            )
+            call.task = asyncio.create_task(self._run(attempt_id, call, token, joined, eot_method))
             joined_wait = asyncio.create_task(joined.wait())
             try:
                 done, _ = await asyncio.wait(
@@ -181,6 +187,14 @@ class LiveKitStudyStarter:
             if call.task is not None:
                 call.task.cancel()
                 await asyncio.gather(call.task, return_exceptions=True)
+            log = self.transcripts.get(attempt_id)
+            if log is not None:
+                log.finish()
+                if log.evidence is not None and not log.evidence.closed:
+                    try:
+                        await log.evidence.finalize("setup_failed", 0)
+                    except Exception:
+                        logger.warning("Study setup evidence could not be finalized")
             async with self._lock:
                 still_reserved = attempt_id in self._active
                 if still_reserved:
@@ -230,6 +244,7 @@ class LiveKitStudyStarter:
                 eot_method=method,
                 on_audio_frame=tracker.frame,
                 on_audio_lost=tracker.close,
+                transcript=self.transcripts.get(attempt_id),
             )
         except asyncio.CancelledError:
             pass
@@ -244,9 +259,30 @@ class LiveKitStudyStarter:
                     reason = (
                         "setup_failed"
                         if call.setup_failed or not call.ready
-                        else "normal" if call.ending_normally else "interrupted"
+                        else "normal"
+                        if call.ending_normally
+                        else "interrupted"
                     )
                     finish(db, attempt_id, reason)
+                    attempt = db.get(StudyAttempt, attempt_id)
+                    log = self.transcripts.get(attempt_id)
+                    if log is not None:
+                        log.finish()
+                        if log.evidence is not None:
+                            try:
+                                if attempt is None:
+                                    # Close capture files without registering successful evidence.
+                                    await log.evidence.finalize("setup_failed", 0)
+                                    raise RuntimeError("Study attempt is unavailable")
+                                digest = await log.evidence.finalize(reason, attempt.media_ms)
+                                db.add(StudyEvidence(attempt_id=attempt_id, manifest_sha256=digest))
+                                db.commit()
+                                from app.study_calls import evidence_saved
+
+                                evidence_saved(db, attempt_id)
+                            except Exception:
+                                db.rollback()
+                                logger.warning("Study evidence finalization failed")
             finally:
                 await self._delete_room(call.room)
                 async with self._lock:
@@ -275,7 +311,8 @@ def livekit_study_from_env(
     key = os.getenv("LIVEKIT_API_KEY", "").strip()
     secret = os.getenv("LIVEKIT_API_SECRET", "").strip()
     tutor = TutorConfig.from_env()
-    if not (url.startswith("wss://") and key and secret and tutor is not None):
+    evidence = EvidenceStore.from_env()
+    if not (url.startswith("wss://") and key and secret and tutor is not None and evidence):
         return None
     try:
         from faster_whisper import WhisperModel  # noqa: F401
@@ -284,4 +321,10 @@ def livekit_study_from_env(
         from pipecat.transports.livekit.transport import LiveKitTransport  # noqa: F401
     except Exception:
         return None
-    return LiveKitStudyStarter(LiveKitGateway(url, key, secret), tutor, sessions, capacity=capacity)
+    return LiveKitStudyStarter(
+        LiveKitGateway(url, key, secret),
+        tutor,
+        sessions,
+        capacity=capacity,
+        evidence_store=evidence,
+    )

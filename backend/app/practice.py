@@ -33,6 +33,7 @@ class PracticeConnection:
     call_id: UUID
     room_url: str
     join_token: str
+    transcript_token: str | None = None
 
 
 class PracticeCallStarter(Protocol):
