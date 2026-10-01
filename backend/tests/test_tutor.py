@@ -67,9 +67,12 @@ def test_tutor_uses_multilingual_whisper_japanese_voice_and_separate_eot(tmp_pat
         TurnAnalyzerUserTurnStopStrategy,
     )
 
+    from app import japanese_tts
+
     monkeypatch.setattr(WhisperSTTService, "_load", lambda self: None)
     monkeypatch.setattr(kokoro_module, "Kokoro", lambda *args: object())
     monkeypatch.setattr(kokoro_module, "_ensure_model_files", lambda *args: None)
+    monkeypatch.setattr(japanese_tts, "JAG2P", lambda **kwargs: object())
     config = TutorConfig(tmp_path / "small", tmp_path / "kokoro", tmp_path / "voices", "http://localhost/v1")
 
     adaptive = build_tutor_processors(config)
@@ -95,3 +98,41 @@ def test_tutor_uses_multilingual_whisper_japanese_voice_and_separate_eot(tmp_pat
 
     with pytest.raises(ValueError, match="Unsupported turn method"):
         build_tutor_processors(config, eot_method="unknown")
+
+
+def test_japanese_tts_passes_japanese_phonemes_to_kokoro(tmp_path, monkeypatch):
+    pytest.importorskip("misaki.ja")
+    import numpy as np
+    from pipecat.frames.frames import TTSAudioRawFrame
+    from pipecat.services.kokoro import tts as kokoro_module
+
+    from app import japanese_tts
+
+    calls = []
+
+    class FakeKokoro:
+        async def create_stream(self, text, **kwargs):
+            calls.append((text, kwargs))
+            yield np.array([0.0, 0.25, -0.25], dtype=np.float32), 24000
+
+    monkeypatch.setattr(kokoro_module, "Kokoro", lambda *args: FakeKokoro())
+    monkeypatch.setattr(kokoro_module, "_ensure_model_files", lambda *args: None)
+    monkeypatch.setattr(japanese_tts, "JAG2P", lambda **kwargs: lambda text: ("koɲɲiʨiwa", []))
+    service = japanese_tts.JapaneseKokoroTTSService(
+        model_path=str(tmp_path / "kokoro"),
+        voices_path=str(tmp_path / "voices"),
+        sample_rate=24000,
+        settings=japanese_tts.JapaneseKokoroTTSService.Settings(voice="jf_alpha"),
+    )
+
+    async def scenario():
+        # Pipeline StartFrame normally supplies this output rate.
+        service._sample_rate = 24000
+        frames = [frame async for frame in service.run_tts("こんにちは", "test-context")]
+        assert calls == [("koɲɲiʨiwa", {"voice": "jf_alpha", "speed": 1.0, "is_phonemes": True})]
+        assert len(frames) == 1
+        assert isinstance(frames[0], TTSAudioRawFrame)
+        assert frames[0].context_id == "test-context"
+        assert len(frames[0].audio) == 6
+
+    asyncio.run(scenario())

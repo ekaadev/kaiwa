@@ -81,7 +81,6 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
         LLMUserAggregatorParams,
     )
     from pipecat.processors.audio.vad_processor import VADProcessor
-    from pipecat.services.kokoro.tts import KokoroTTSService
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transcriptions.language import Language
@@ -90,6 +89,8 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
         TurnAnalyzerUserTurnStopStrategy,
     )
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+    from app.japanese_tts import JapaneseKokoroTTSService
 
     if eot_method == "adaptive":
         vad_stop_secs = 0.2
@@ -117,10 +118,10 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
             extra={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
         ),
     )
-    tts = KokoroTTSService(
+    tts = JapaneseKokoroTTSService(
         model_path=str(config.kokoro_model_path),
         voices_path=str(config.kokoro_voices_path),
-        settings=KokoroTTSService.Settings(voice=KOKORO_VOICE, language=Language.JA),
+        settings=JapaneseKokoroTTSService.Settings(voice=KOKORO_VOICE, language=Language.JA),
     )
     aggregators = LLMContextAggregatorPair(
         LLMContext(messages=[{"role": "system", "content": TUTOR_INSTRUCTIONS}]),
