@@ -4,13 +4,15 @@
 
 - This repository contains an AI conversation mobile app and its backend. Use `docs/PLAN.md` for feature priorities and progress, and each project's README for setup and limitations.
 - Inspect current code before changing progress checkboxes. Distinguish implemented behavior from validation with actual inference, network audio, and phone playback. Keep plan updates concise; do not add implementation-evidence sections unless requested.
-- Read `backend/AGENTS.md` when working in the backend. Its historical statements about missing migrations and startup table creation are outdated: deployment uses Alembic; `create_all` is limited to injected test engines. Some backend README descriptions of manual mobile token/server entry are also outdated; the mobile app enrolls participants and receives its server address at build time.
+- Deployment uses Alembic migrations; `create_all` is limited to injected test engines. The mobile app enrolls participants and receives its server address at build time (no Settings input for server/token).
+- Human-facing documentation (READMEs, `docs/`) is written in Indonesian; this file and code comments stay in English. Do not reintroduce per-hardware deployment guides; keep `docs/deployment-gpu.md` GPU-model agnostic.
 - Native iOS execution is deferred by the user. Maintain the Compose Multiplatform architecture and iOS sources, but do not treat running Xcode or an iOS device as a blocker for the current Android milestone.
 
 ## Layout and architecture
 
 - `backend/app/`: Python 3.11–3.13, FastAPI, SQLAlchemy, study enrollment and call lifecycle, LiveKit/Pipecat transport, tutor pipeline, transcripts, and private study evidence.
-- `backend/migrations/`: versioned Alembic database migrations. `backend/tests/` contains API and unit tests; `backend/scripts/` contains local utilities.
+- `backend/migrations/`: versioned Alembic database migrations. `backend/tests/` contains API and unit tests; `backend/scripts/` contains local utilities (microphone Whisper try-out, speech benchmark, GPU venv installer).
+- `deploy/`: GPU server runtime template and deployment artifacts; `infra/neon/`: Neon project/bucket configuration (run the Neon CLI from there); `docs/`: architecture, GPU deployment guide, feature plan.
 - `mobile/shared/src/commonMain/`: Compose Multiplatform UI, application state, Ktor API, Room persistence, and platform contracts.
 - `mobile/shared/src/androidMain/`: Android LiveKit adapter, microphone permissions, and Keystore-backed credentials. `mobile/androidApp/` is the Android host.
 - `mobile/shared/src/iosMain/` and `mobile/iosApp/`: Kotlin and Swift host/LiveKit/Keychain integration.
@@ -30,7 +32,7 @@ uv run --env-file .env alembic upgrade head
 uv run --env-file .env uvicorn app.main:app --reload
 ```
 
-- The compose database and its credentials are for local development. For an existing database created before migrations, follow the backup/schema verification and baseline instructions in `backend/README.md`; do not blindly stamp or recreate tables.
+- The deployed backend uses Neon Postgres (pooled `DATABASE_URL`, direct `DATABASE_URL_UNPOOLED` for Alembic/dumps) and a private Neon S3 bucket for study evidence, on a GPU server. The compose database and its credentials are for local development and tests only. For an existing database created before migrations, follow the backup/schema verification and baseline instructions in `backend/README.md`; do not blindly stamp or recreate tables.
 - For real calls, install `calls` and `tutor` extras, configure LiveKit and local model assets plus a self-hosted Qwen endpoint, then start with:
 
 ```sh
