@@ -1,4 +1,4 @@
-"""Expose the API on port 8000 behind a private random path prefix via the template's nginx.
+"""Expose the API on the proxy port (KAIWA_PROXY_PORT, default 8000) behind a private random path prefix via the template's nginx.
 
 The prefix is generated once and kept in access.json on the container disk. The public
 base URL is recomputed from the pod ID (RUNPOD_POD_ID, KAIWA_POD_ID, or /proc/1/environ) on every run, so a new pod only needs this script.
@@ -31,14 +31,15 @@ def find_pod_id() -> str:
 
 
 pod_id = find_pod_id()
-access = {"prefix": prefix, "base_url": f"https://{pod_id}-8000.proxy.runpod.net{prefix}"}
+proxy_port = os.environ.get("KAIWA_PROXY_PORT", "8000")
+access = {"prefix": prefix, "base_url": f"https://{pod_id}-{proxy_port}.proxy.runpod.net{prefix}"}
 CONFIG.mkdir(parents=True, exist_ok=True)
 record.write_text(json.dumps(access, indent=2))
 record.chmod(0o600)
 
 api_port = os.environ.get("KAIWA_API_PORT", "8002")
 config = """server {
-    listen 8000;
+    listen PROXY_PORT;
     server_name _;
     access_log off;
     error_log /var/log/nginx/conversation-error.log warn;
@@ -52,7 +53,7 @@ config = """server {
         proxy_read_timeout 90s;
     }
 }
-""".replace("PREFIX", prefix).replace("API_PORT", api_port)
+""".replace("PREFIX", prefix).replace("API_PORT", api_port).replace("PROXY_PORT", proxy_port)
 Path("/etc/nginx/conf.d").mkdir(exist_ok=True)
 Path("/etc/nginx/conf.d/conversation.conf").write_text(config)
 main = Path("/etc/nginx/nginx.conf")

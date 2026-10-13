@@ -124,10 +124,20 @@ dijalankan, sehingga pod baru hanya perlu menjalankan ulang skrip ini. Baca base
 python3 -c 'import json; print(json.load(open("/root/.config/ai-conversation/access.json"))["base_url"])'
 ```
 
-Port proxy (default 8000) harus diekspos pada pod (`8000/http`); jika tidak, URL publik
+Port proxy (default 8000) harus termasuk port yang diekspos pada pod; jika tidak, URL publik
 mengembalikan 404 meski nginx lokal sehat. Mengubah port yang diekspos me-restart pod dan
-menghapus disk container (runtime.env, paket sistem). Alternatifnya memakai port yang sudah
-diekspos, mis. 8888 dengan Jupyter dipindah ke port lain.
+menghapus disk container (runtime.env, paket sistem). Alternatif tanpa restart: pakai port
+yang sudah diekspos (template RunPod mengekspos 8888 untuk JupyterLab) dan pindahkan Jupyter:
+
+```sh
+python3 move_jupyter.py 8889                       # Jupyter ke 127.0.0.1:8889, token sama
+KAIWA_PROXY_PORT=8888 python3 configure_proxy.py   # nginx melayani API di 8888
+```
+
+Setelah itu tombol Connect JupyterLab tidak lagi membuka Jupyter; akses lewat SSH tunnel
+(`ssh -L 8889:127.0.0.1:8889 ...` lalu `http://localhost:8889`). Restart pod mengembalikan
+Jupyter ke 8888, sehingga kedua perintah di atas perlu diulang. Gunakan `KAIWA_PROXY_PORT`
+yang sama setiap kali menjalankan `start-services.sh`.
 
 Karena `access.json` ada di disk container, pod baru mendapat kode jalur dan base URL baru:
 build ulang mobile dengan alamat itu. Jangan commit base URL ke Git.
