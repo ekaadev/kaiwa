@@ -1,19 +1,22 @@
 # Deployment GPU
 
-Folder ini menampung artefak untuk menjalankan backend di server GPU (saat ini pod RunPod).
-Langkah lengkapnya ada di [docs/deployment-gpu.md](../docs/deployment-gpu.md).
+Artefak untuk menjalankan backend di server GPU (saat ini pod RunPod). Langkah lengkap:
+[docs/deployment-gpu.md](../docs/deployment-gpu.md).
 
 | Berkas | Fungsi |
 |---|---|
-| `runtime.env.example` | Template konfigurasi runtime (database Neon, LiveKit, model, GPU). Salin ke berkas privat di luar repository. |
+| `runtime.env.example` | Template konfigurasi runtime (Neon, LiveKit, model, GPU). Salin ke berkas privat mode 600 di luar repository. |
+| `bootstrap.sh` | Setup pod baru pada network volume yang ada: paket sistem, `.venv`, `llm-venv`, unduh Qwen. |
+| `start-services.sh` | Memulai Qwen dan API di background lalu mengatur proxy. |
+| `launch_llm.py`, `launch_api.py` | Peluncur vLLM dan uvicorn (satu worker) yang memuat `runtime.env`. |
+| `configure_proxy.py` | Proxy nginx port 8000 dengan jalur privat acak; base URL dari `RUNPOD_POD_ID`. |
+| `launch_gpu_task.py` | Menjalankan skrip backend (mis. benchmark) di `.venv-gpu` dengan library CUDA. |
+| `smoke_models.py`, `livekit_smoke.py` | Uji asap model dan panggilan Practice sintetis. |
+| `download_qwen.py`, `_paths.py` | Unduh Qwen pada revisi tercatat; path dan loader env bersama. |
 
-## Skrip peluncur pod belum ada di repo
+Lokasi default dapat diganti: `KAIWA_ROOT` (`/workspace/ai-conversation`) dan
+`KAIWA_CONFIG_DIR` (`/root/.config/ai-conversation`, disk container). Port lewat
+`KAIWA_API_PORT` (8002) dan `KAIWA_LLM_PORT` (18001).
 
-Skrip berikut masih berada di `/workspace/ai-conversation/scripts` pada pod dan perlu
-disalin ke folder ini setelah diperiksa agar bebas secret dan URL privat:
-
-- `start-services.sh`, `launch_llm.py`, `launch_api.py`, `configure_proxy.py`
-- `smoke_models.py`, `livekit_smoke.py`
-
-Sebelum itu, `docs/deployment-gpu.md` menjelaskan perintah manual yang setara.
-`init_database.py` hanya untuk PostgreSQL lokal lama dan tidak perlu disalin.
+Skrip tidak berisi secret; kredensial hanya dibaca dari `runtime.env`. Skrip ini disalin dari
+pod yang berjalan dan hanya diparameterkan; uji ulang di pod setelah perubahan.

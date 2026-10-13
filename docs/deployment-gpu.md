@@ -32,15 +32,19 @@ tutor sama-sama bergabung ke ruang LiveKit.
 
 | Lokasi | Isi | Bertahan jika disk container hilang? |
 |---|---|---|
-| Network volume (`/workspace/kaiwa`) | Kode, `models/`, `.venv-gpu`, `llm-venv`, `logs/` | Ya |
-| Disk container (`/root/.config/kaiwa`) | `runtime.env` (mode 600), staging evidence (mode 700), PID | Tidak |
+| Network volume (`/workspace/ai-conversation`) | Kode, `models/`, `.venv-gpu`, `llm-venv`, `logs/` | Ya |
+| Disk container (`/root/.config/ai-conversation`) | `runtime.env` (mode 600), staging evidence (mode 700), PID | Tidak |
 | Neon | Database dan rekaman/transkrip evidence | Ya |
 
-Path `/workspace/kaiwa` adalah contoh (pod saat ini masih memakai `/workspace/ai-conversation`).
+Lokasi default dapat diganti lewat `KAIWA_ROOT` dan `KAIWA_CONFIG_DIR`.
 Network volume bisa tidak menerapkan `chmod`/`chown`; jangan menyimpan kredensial atau
 data privat di sana. Simpan salinan `runtime.env` di tempat aman di luar server.
 
 ## 3. Penyiapan pertama
+
+Pod baru dengan network volume yang sudah berisi kode dan model hanya perlu paket sistem dan
+virtualenv; `deploy/bootstrap.sh` mengerjakan keduanya (apt, `.venv`, `llm-venv`, unduh Qwen
+dengan revisi tercatat). Setelah itu jalankan instalasi GPU di bawah.
 
 **Model** (di `models/`, revisi dicatat/di-pin):
 
@@ -51,7 +55,7 @@ data privat di sana. Simpan salinan `runtime.env` di tempat aman di luar server.
 **Environment GPU backend** dari `backend/`:
 
 ```sh
-export UV_CACHE_DIR=/workspace/kaiwa/cache/uv
+export UV_CACHE_DIR=/workspace/ai-conversation/cache/uv
 CONVERSATION_GPU_PYTHON=/usr/bin/python3 bash scripts/install_gpu_trial.sh
 ```
 
@@ -59,57 +63,69 @@ Skrip membuat `.venv-gpu` dari `uv.lock` dengan `onnxruntime-gpu==1.23.2` mengga
 `onnxruntime`. Jangan menjalankan `uv sync` biasa pada `.venv-gpu` atau memasang kedua
 distribusi ONNX sekaligus.
 
-**Environment vLLM** dipisahkan (`llm-venv`) agar versi transformers tidak bertabrakan
+**Environment vLLM** dipisahkan (`llm-venv`, vLLM 0.10.2 dan transformers 4.55.2) agar versi transformers tidak bertabrakan
 dengan backend.
 
 **Konfigurasi runtime**: salin `deploy/runtime.env.example` ke
-`/root/.config/kaiwa/runtime.env`, isi nilainya, lalu `chmod 600`. Buat staging evidence:
+`/root/.config/ai-conversation/runtime.env`, isi nilainya, lalu `chmod 600`. Buat staging evidence:
 
 ```sh
-install -d -m 700 /root/.config/kaiwa/study-evidence
+install -d -m 700 /root/.config/ai-conversation/study-evidence
 ```
 
-Library CUDA/cuDNN harus ada di `LD_LIBRARY_PATH` **sebelum** interpreter GPU dijalankan
-(pada image PyTorch RunPod: `/usr/local/lib/python3.12/dist-packages/nvidia/*/lib`).
+Library CUDA/cuDNN dari paket pip (`nvidia/*/lib`) dimasukkan ke `LD_LIBRARY_PATH` oleh
+`launch_api.py` dan `launch_gpu_task.py` sebelum interpreter GPU dijalankan.
 
 ## 4. Migrasi database
 
 Dari `backend/`, memakai koneksi langsung Neon:
 
 ```sh
-uv run --no-sync --env-file /root/.config/kaiwa/runtime.env alembic upgrade head
+uv run --no-sync --env-file /root/.config/ai-conversation/runtime.env alembic upgrade head
 ```
 
 API tidak membuat tabel saat startup; revisi yang diharapkan adalah `0003_study_evidence`.
 
-## 5. Jalankan Qwen
+## 5. Jalankan Qwen dan FastAPI
+
+**Di pod**, dari folder `deploy/` (checkout repo atau salinannya, mis.
+`$KAIWA_ROOT/scripts/`):
 
 ```sh
-export HF_HOME=/workspace/kaiwa/cache/huggingface HF_HUB_DISABLE_TELEMETRY=1 VLLM_NO_USAGE_STATS=1
-set -a; . /root/.config/kaiwa/runtime.env; set +a
-setsid /workspace/kaiwa/llm-venv/bin/vllm serve /workspace/kaiwa/models/qwen3-1.7b \
-  --served-model-name Qwen/Qwen3-1.7B --host 127.0.0.1 --port 18001 \
-  --dtype bfloat16 --max-model-len 32768 --max-num-seqs 2 \
-  --gpu-memory-utilization 0.75 --enforce-eager --api-key "$TUTOR_LLM_API_KEY" \
-  >> /workspace/kaiwa/logs/llm.log 2>&1 < /dev/null &
+bash start-services.sh
 ```
 
-Nama model harus tepat `Qwen/Qwen3-1.7B`. Tunggu sampai
-`curl -fsS http://127.0.0.1:18001/health` mengembalikan 200 (beberapa menit).
+Skrip memulai Qwen (`launch_llm.py`, vLLM di `127.0.0.1:18001`) dan API
+(`launch_api.py`, uvicorn **satu worker** di `127.0.0.1:8002`, interpreter dari
+`CONVERSATION_API_PYTHON`, default `.venv-gpu`), menyimpan PID, lalu mengatur proxy
+(`configure_proxy.py`). Proses berjalan di background; skrip selesai **bukan** berarti model
+sudah dimuat. Layanan yang sudah sehat atau PID-nya masih hidup dilewati.
 
-## 6. Jalankan FastAPI
+Tunggu health (Qwen beberapa menit):
 
 ```sh
-cd /workspace/kaiwa/backend
-umask 077
-setsid .venv-gpu/bin/python -m uvicorn app.main:app \
-  --host 127.0.0.1 --port 8002 --workers 1 \
-  >> /workspace/kaiwa/logs/api.log 2>&1 < /dev/null &
+curl -fsS http://127.0.0.1:18001/health   # Qwen
+curl -fsS http://127.0.0.1:8002/health    # {"status":"ok"}
 ```
 
-Muat `runtime.env` lebih dulu seperti langkah 5 dan pastikan `LD_LIBRARY_PATH` sudah diatur (langkah 3); uvicorn tidak membaca `.env`. Gunakan
-**satu worker** dan tanpa autoreload. Periksa `curl -fsS http://127.0.0.1:8002/health`
-(`{"status":"ok"}`).
+Log: `logs/llm.log` dan `logs/api.log`. Nama model yang disajikan harus tepat
+`Qwen/Qwen3-1.7B`. Muat `runtime.env` hanya lewat peluncur; uvicorn tidak membaca `.env`.
+Port dan utilisasi GPU vLLM dapat diubah lewat `KAIWA_LLM_PORT`, `KAIWA_API_PORT`, dan
+`KAIWA_VLLM_GPU_UTILIZATION`.
+
+## 6. Proxy HTTPS
+
+`configure_proxy.py` membuat konfigurasi nginx (port 8000) yang hanya meneruskan jalur
+`/pilot/<kode-acak>/` ke API; root mengembalikan 404. Kode jalur dibuat sekali dan disimpan di
+`access.json` (disk container); base URL publik dihitung ulang dari `RUNPOD_POD_ID` setiap
+dijalankan, sehingga pod baru hanya perlu menjalankan ulang skrip ini. Baca base URL:
+
+```sh
+python3 -c 'import json; print(json.load(open("/root/.config/ai-conversation/access.json"))["base_url"])'
+```
+
+Karena `access.json` ada di disk container, pod baru mendapat kode jalur dan base URL baru:
+build ulang mobile dengan alamat itu. Jangan commit base URL ke Git.
 
 ## 7. Readiness dan HTTPS
 
@@ -123,10 +139,18 @@ berfungsi. Dari komputer lokal, uji base URL HTTPS publik (`/health` dan
 
 ## 8. Uji
 
-- `smoke_models.py` menguji Qwen, Kokoro Jepang, dan Whisper dengan input sintetis.
-- `livekit_smoke.py` membuat satu panggilan Practice sintetis: start 201, audio tutor
-  diterima, end 204, transkrip final. Ini tidak membuktikan playback di ponsel.
-- Uji komponen CPU vs GPU: `PYTHONPATH=. .venv-gpu/bin/python scripts/benchmark_speech.py --output /path/privat/benchmark.json` dari `backend/`.
+**Di pod**, dari folder `deploy/`, dengan interpreter `.venv` (CPU):
+
+```sh
+$KAIWA_ROOT/backend/.venv/bin/python smoke_models.py    # Qwen, Kokoro Jepang, Whisper (sintetis)
+$KAIWA_ROOT/backend/.venv/bin/python livekit_smoke.py   # satu panggilan Practice sintetis
+```
+
+- `smoke_models.py` menulis `logs/model-smoke.json`; tidak membuka panggilan LiveKit.
+- `livekit_smoke.py` menulis `logs/livekit-smoke.json`: start 201, audio tutor diterima, end
+  204, transkrip final. Tidak membuktikan playback di ponsel.
+- Benchmark CPU vs GPU, memakai CUDA libraries dan runtime.env:
+  `python launch_gpu_task.py scripts/benchmark_speech.py --output /path/privat/benchmark.json`
 
 ## 9. Hubungkan mobile
 
@@ -154,10 +178,10 @@ ke mobile.
 
 ## 11. Menghentikan dan memulihkan
 
-- Hentikan proses API/Qwen dengan memverifikasi PID sebelum `kill`; jangan ada panggilan
+- Hentikan proses API/Qwen (`api.pid`, `llm.pid`) dengan memverifikasi PID sebelum `kill`; jangan ada panggilan
   aktif. Menghentikan proses tidak menghentikan biaya pod.
 - Jika disk container hilang: database dan evidence tetap aman di Neon. Pulihkan
-  `runtime.env` dari salinan aman, buat ulang staging evidence, lalu ulangi langkah 5–7.
+  `runtime.env` dari salinan aman, buat ulang staging evidence, lalu jalankan `start-services.sh` dan ulangi langkah 7. Alamat proxy berubah (lihat langkah 6).
   Panggilan yang terputus sebelum evidence final diunggah tidak dijamin pulih.
 - Untuk kembali ke inferensi CPU, ganti hanya variabel `TUTOR_*`/`ONNX_PROVIDER`; pertahankan
   `DATABASE_URL*`.
