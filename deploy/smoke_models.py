@@ -38,5 +38,5 @@ try:
     results["whisper"]={"language":info.language,"text":text,"seconds":round(time.monotonic()-t,2)}
 except Exception as exc:
     results["pipeline_error"]={"type":type(exc).__name__,"message":str(exc)[:240]}
-LOGS/"model-smoke.json".write_text(json.dumps(results,ensure_ascii=False,indent=2))
+(LOGS / "model-smoke.json").write_text(json.dumps(results,ensure_ascii=False,indent=2))
 print(json.dumps(results,ensure_ascii=False,indent=2),flush=True)

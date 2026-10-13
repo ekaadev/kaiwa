@@ -124,6 +124,11 @@ dijalankan, sehingga pod baru hanya perlu menjalankan ulang skrip ini. Baca base
 python3 -c 'import json; print(json.load(open("/root/.config/ai-conversation/access.json"))["base_url"])'
 ```
 
+Port proxy (default 8000) harus diekspos pada pod (`8000/http`); jika tidak, URL publik
+mengembalikan 404 meski nginx lokal sehat. Mengubah port yang diekspos me-restart pod dan
+menghapus disk container (runtime.env, paket sistem). Alternatifnya memakai port yang sudah
+diekspos, mis. 8888 dengan Jupyter dipindah ke port lain.
+
 Karena `access.json` ada di disk container, pod baru mendapat kode jalur dan base URL baru:
 build ulang mobile dengan alamat itu. Jangan commit base URL ke Git.
 
@@ -139,11 +144,11 @@ berfungsi. Dari komputer lokal, uji base URL HTTPS publik (`/health` dan
 
 ## 8. Uji
 
-**Di pod**, dari folder `deploy/`, dengan interpreter `.venv` (CPU):
+**Di pod**, dari folder `deploy/` (lewat `.venv-gpu` dengan library CUDA, sesuai konfigurasi runtime):
 
 ```sh
-$KAIWA_ROOT/backend/.venv/bin/python smoke_models.py    # Qwen, Kokoro Jepang, Whisper (sintetis)
-$KAIWA_ROOT/backend/.venv/bin/python livekit_smoke.py   # satu panggilan Practice sintetis
+python3 launch_gpu_task.py smoke_models.py    # Qwen, Kokoro Jepang, Whisper (sintetis)
+python3 launch_gpu_task.py livekit_smoke.py   # satu panggilan Practice sintetis
 ```
 
 - `smoke_models.py` menulis `logs/model-smoke.json`; tidak membuka panggilan LiveKit.
@@ -172,6 +177,7 @@ ke mobile.
 | API gagal startup | `logs/api.log`, `DATABASE_URL`, revisi Alembic |
 | `/health` 200, readiness 503 | LiveKit, file model, API key Qwen, nama model, slot panggilan |
 | `capacity_full` | Dua slot sedang dipakai; akhiri panggilan atau tunggu cleanup |
+| HTTPS 404 padahal nginx lokal 200 | Port proxy belum diekspos pada pod (lihat langkah 6) |
 | HTTPS 404/502/403 | Base URL/jalur proxy, API lokal belum siap |
 | TTS Jepang gagal | Paket Misaki/Open JTalk, model Kokoro dan voicepack yang cocok |
 | CUDA tidak terpakai | `LD_LIBRARY_PATH`, `onnxruntime-gpu` tunggal, variabel `TUTOR_*` |

@@ -1,7 +1,7 @@
 """Expose the API on port 8000 behind a private random path prefix via the template's nginx.
 
 The prefix is generated once and kept in access.json on the container disk. The public
-base URL is recomputed from RUNPOD_POD_ID on every run, so a new pod only needs this script.
+base URL is recomputed from the pod ID (RUNPOD_POD_ID, KAIWA_POD_ID, or /proc/1/environ) on every run, so a new pod only needs this script.
 """
 
 import json
@@ -17,7 +17,20 @@ if record.exists():
     prefix = json.loads(record.read_text())["prefix"]
 else:
     prefix = "/pilot/" + secrets.token_hex(32)
-pod_id = os.environ.get("RUNPOD_POD_ID") or os.environ["KAIWA_POD_ID"]
+
+
+def find_pod_id() -> str:
+    """RUNPOD_POD_ID is set for the container's main process but not for SSH sessions."""
+    for name in ("KAIWA_POD_ID", "RUNPOD_POD_ID"):
+        if os.environ.get(name):
+            return os.environ[name]
+    for entry in Path("/proc/1/environ").read_bytes().split(b"\0"):
+        if entry.startswith(b"RUNPOD_POD_ID="):
+            return entry.split(b"=", 1)[1].decode()
+    raise SystemExit("Set KAIWA_POD_ID: RUNPOD_POD_ID was not found")
+
+
+pod_id = find_pod_id()
 access = {"prefix": prefix, "base_url": f"https://{pod_id}-8000.proxy.runpod.net{prefix}"}
 CONFIG.mkdir(parents=True, exist_ok=True)
 record.write_text(json.dumps(access, indent=2))
