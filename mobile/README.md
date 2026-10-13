@@ -27,12 +27,24 @@ Use `deliverables/ai-conversation-1.0.11-local.apk` for current development. It 
 
 The temporary **Preview call screen** action has been removed from Home and Testing. Use **Start to Call** to enter the approved Call Screen once microphone access is granted and the backend call service is ready.
 
-The endpoint is supplied at build time through `-PconversationServerUrl=...` or the
-`CONVERSATION_SERVER_URL` environment variable. No address is bundled by default, because there is
-currently no live deployment. An unconfigured build shows an unavailable message and creates no
+The endpoint is supplied at build time through `-PconversationServerUrl=...`, the
+`CONVERSATION_SERVER_URL` environment variable, or the ignored `mobile/local.properties` file,
+in that order of precedence. An unconfigured build shows an unavailable message and creates no
 participant or sample token. Release builds accept HTTPS; HTTP is enabled only for development builds.
 Legacy manually entered URLs are no longer used; credentials already saved for the configured
 endpoint remain available.
+
+For IntelliJ/Android Studio's **Run** button, add the following property alongside `sdk.dir` in
+`mobile/local.properties`, using the full deployed base URL (including its private path):
+
+```properties
+conversationServerUrl=https://your-backend.example/pilot/your-private-code
+```
+
+Sync the Gradle project, then run `androidApp`. An IDE build does not inherit an environment variable
+set only in a separate terminal. Keep the actual URL in this ignored file, outside tracked build
+configuration. The Runpod trial deployment and service startup steps are described in
+[the backend operations guide](../backend/RUNPOD.md).
 
 For Android on a USB-connected phone, run the lightweight backend on the computer at port 8000,
 then forward the phone's loopback port:

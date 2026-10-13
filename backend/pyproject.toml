@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 calls = [
+    "boto3>=1.36,<2",
     "livekit-api>=1,<2",
     "pipecat-ai[livekit]>=0.0.108,<0.0.109",
 ]

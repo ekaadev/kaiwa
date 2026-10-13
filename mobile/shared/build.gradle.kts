@@ -6,6 +6,7 @@ import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import java.net.URI
+import java.util.Properties
 
 plugins {
     id("com.google.devtools.ksp") version "2.3.12"
@@ -40,9 +41,17 @@ abstract class GenerateAppConfiguration : DefaultTask() {
     }
 }
 
+val localServerUrl = providers.fileContents(
+    rootProject.layout.projectDirectory.file("local.properties")
+).asText.map { contents ->
+    Properties().apply { contents.reader().use { load(it) } }
+        .getProperty("conversationServerUrl", "")
+}
+
 val generateAppConfiguration = tasks.register<GenerateAppConfiguration>("generateAppConfiguration") {
     serverUrl.set(providers.gradleProperty("conversationServerUrl")
-        .orElse(providers.environmentVariable("CONVERSATION_SERVER_URL")).orElse(""))
+        .orElse(providers.environmentVariable("CONVERSATION_SERVER_URL"))
+        .orElse(localServerUrl).orElse(""))
     outputDirectory.set(layout.buildDirectory.dir("generated/appConfiguration"))
 }
 

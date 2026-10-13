@@ -4,6 +4,11 @@ Panduan ini untuk setup uji coba pribadi yang sudah dipasang di pod. Semua
 perintah bertanda **di pod** dijalankan melalui Terminal JupyterLab atau SSH.
 Perintah bertanda **di komputer lokal** dijalankan di komputer Anda.
 
+Bagian 2–12 mendokumentasikan baseline awal RTX 3090 dengan PostgreSQL lokal.
+Deployment demo sekarang memakai RTX 4090 (bagian 14) dan database Neon
+(bagian 15). Untuk deployment Neon, jangan membuat atau memulihkan database lokal
+melalui bagian 5 atau 12.4; jalankan Alembic dengan koneksi langsung Neon.
+
 Urutan operasional: **periksa pod dan konfigurasi → PostgreSQL → migrasi →
 Qwen → FastAPI → proxy HTTPS → readiness → uji percakapan → mobile**.
 
@@ -690,3 +695,184 @@ evidence privat yang benar-benar menerapkan mode 700, serta persetujuan consent
 versi final dan kebijakan retensi. Konfigurasi uji coba saat ini tidak menyediakan
 hal tersebut. Transkrip Practice berada dalam memori proses selama waktu terbatas;
 restart API tidak mempertahankan transkrip Practice.
+
+## 14. Uji GPU pada RTX 4090
+
+Pada pod demo RTX 4090, Whisper menggunakan CUDA float16 dan Kokoro menggunakan
+ONNX CUDA; Smart Turn, Silero VAD, dan frontend fonem Jepang tetap CPU. Qwen tetap
+memakai GPU. API tetap satu worker. Alamat demo memakai jalur privat pada proxy
+port 8888, dengan Jupyter diteruskan ke port lokal 8889; tidak perlu reset pod
+atau rebuild Android jika base URL ini tetap sama.
+
+Environment CPU `.venv` dipertahankan. Environment `.venv-gpu` menggunakan paket
+dari lock yang sama dengan penggantian `onnxruntime` menjadi
+`onnxruntime-gpu==1.23.2`. Untuk menyiapkan environment tersebut dari kode terkini:
+
+```sh
+cd /workspace/ai-conversation/backend
+export UV_CACHE_DIR=/workspace/ai-conversation/cache/uv
+CONVERSATION_GPU_PYTHON=/usr/bin/python3 bash scripts/install_gpu_trial.sh
+```
+
+Jangan menjalankan `uv sync` biasa pada `.venv-gpu` atau memasang kedua distribusi
+ONNX sekaligus. Library CUDA/cuDNN bawaan image tersedia di
+`/usr/local/lib/python3.12/dist-packages/nvidia/*/lib`; path tersebut harus masuk
+`LD_LIBRARY_PATH` **sebelum** interpreter GPU diluncurkan.
+
+Konfigurasi privat demo di `runtime.env` menetapkan:
+
+```dotenv
+TUTOR_WHISPER_DEVICE=cuda
+TUTOR_WHISPER_COMPUTE_TYPE=float16
+TUTOR_KOKORO_EXECUTION_PROVIDER=CUDAExecutionProvider
+ONNX_PROVIDER=CPUExecutionProvider
+CONVERSATION_API_PYTHON=/workspace/ai-conversation/backend/.venv-gpu/bin/python
+```
+
+Peluncur `launch_api.py` pada pod membaca `CONVERSATION_API_PYTHON`; skrip
+`start-services.sh` tetap dapat memulai layanan yang mati. `ONNX_PROVIDER` mengatur
+pemuatan awal Kokoro; adapter Jepang kemudian memilih CUDA secara eksplisit untuk
+session-nya. Operator ONNX yang tidak didukung CUDA masih dapat memakai CPU.
+
+Benchmark sintetis Jepang, median tiga inferensi setelah warm-up: Whisper CPU
+4,924 detik versus GPU 0,066 detik; Kokoro CPU 6,910 detik versus GPU 0,147 detik.
+Profil Kokoro mencatat eksekusi node CUDA; provider Smart Turn/VAD terverifikasi
+CPU. Hasil komponen tidak menggantikan uji audio LiveKit atau playback ponsel.
+Setelah cleanup model per panggilan ditambahkan, tiga panggilan Practice LiveKit
+berurutan berhasil dengan audio pertama 4,50–6,42 detik sejak input mulai dikirim,
+pengakhiran HTTP 204, dan transkrip final. VRAM setelah masing-masing panggilan
+tetap 19.338 MiB. Satu panggilan adalah sasaran demo; playback ponsel dan kapasitas
+dua panggilan bersamaan belum divalidasi.
+
+Pemeriksaan jeda dengan dua panggilan sintetis tambahan pada API diagnostik lokal
+menunjukkan audio pertama sekitar 1,36 dan 5,63 detik setelah akhir audio ucapan
+yang dikirim. Whisper selesai dalam 0,11–0,26 detik. Pada uji yang lambat, Smart
+Turn menilai ucapan belum selesai dan menunggu batas hening 3 detik; pada uji
+berikutnya model langsung menerima akhir giliran. Kokoro menghasilkan audio
+pertama dalam 0,76–0,93 detik termasuk frontend dan inferensi pertama per call.
+Angka benchmark komponen setelah warm-up bukan latensi respons percakapan. API
+diagnostik dihentikan setelah pengukuran; kebijakan akhir giliran belum diubah.
+
+Log API GPU: `logs/api-gpu-demo-4090.log`. Konfigurasi CPU sebelum penggantian
+tersimpan privat di `/root/.config/ai-conversation/runtime-cpu.env`. Untuk kembali
+ke CPU, akhiri panggilan aktif, hentikan **proses API yang PID-nya sudah diverifikasi**
+seperti bagian 11, pulihkan file tersebut ke `runtime.env`, lalu mulai layanan.
+Qwen dan pod tidak perlu dihentikan untuk perubahan backend ini.
+
+Setelah migrasi Neon, backup `runtime-cpu.env` masih menunjuk database lokal lama.
+Untuk mengganti inferensi kembali ke CPU, pertahankan `DATABASE_URL` dan
+`DATABASE_URL_UNPOOLED` Neon dari runtime aktif; jangan menimpa seluruh runtime
+dengan backup CPU tersebut.
+
+## 15. Database Neon pada demo RTX 4090
+
+Pada 5 Oktober 2026, database backend dipindahkan dari PostgreSQL 16 di disk
+container ke PostgreSQL 18 Neon: proyek `kaiwa` (`still-paper-71605449`), branch
+`production`, database `neondb`, region Singapore (`aws-ap-southeast-1`). API
+tetap berjalan pada pod RTX 4090 dengan satu worker dan alamat HTTPS yang sama;
+perpindahan database tidak memerlukan build ulang Android.
+
+Konfigurasi aktif berada di `/root/.config/ai-conversation/runtime.env` dengan
+mode 600. `DATABASE_URL` memakai URL `postgresql+psycopg://` pooled dengan TLS;
+`DATABASE_URL_UNPOOLED` memakai URL langsung untuk Alembic. Kredensial tidak
+disimpan di dokumentasi atau source. Alembic membaca URL langsung apabila tersedia:
+
+```sh
+cd /workspace/ai-conversation/backend
+uv run --no-sync --env-file /root/.config/ai-conversation/runtime.env python -m alembic upgrade head
+```
+
+Restore diuji pada branch sementara sebelum cutover; branch uji dihapus setelah
+validasi selesai. API kemudian dihentikan
+tanpa panggilan aktif, dump final dibuat, dan data direstore ke database Neon
+kosong. Revisi `0003_study_evidence`, checksum isi enam tabel, kolom, constraint,
+indeks, serta satu sequence cocok dengan sumber. Tabel peserta dan sesi studi
+masih kosong. Perbandingan metadata memperhitungkan representasi `NOT NULL` dan
+cast array indeks yang berbeda antara PostgreSQL 16 dan 18. Transaksi tulis
+melalui pooler juga diuji lalu di-rollback. API siap kembali sekitar 46 detik
+setelah cutover dimulai. HTTPS health/readiness, pembuatan panggilan Practice
+HTTP 201, dan pengakhirannya HTTP 204 lulus; ini bukan uji playback ponsel baru.
+
+Qwen, Whisper, Kokoro, Smart Turn, VAD, LiveKit, dan kebijakan studi tetap memakai
+konfigurasi sebelumnya. Skrip `scripts/start-services.sh` di pod melewati startup
+PostgreSQL lokal apabila runtime menunjuk Neon. Cluster PostgreSQL lokal beserta
+data lamanya dipertahankan untuk pemulihan; backend aktif memakai Neon. Jangan
+beralih ke salinan lokal lama setelah ada tulisan baru di Neon tanpa memindahkan
+perubahan tersebut terlebih dahulu.
+
+Backup tersedia di dua tempat:
+
+- Di pod: `/workspace/ai-conversation/private-backups/neon-20261005.tar.gz.aesgcm`,
+  arsip terenkripsi AES-256-GCM berisi dump final, runtime sebelum/sesudah migrasi,
+  dan manifest pemeriksaan. Network volume ini tidak menerapkan `chmod` privat,
+  sehingga backup plaintext telah dihapus dari volume.
+- Di komputer lokal: `.neon-backups/2026-10-05/`, diabaikan Git, direktori mode 700
+  dan file mode 600. Salinan plaintext ada di `pod/`; arsip terenkripsi dan kunci
+  `neon-backup-20261005.key` juga disimpan di sini. Kunci cadangan di pod berada pada
+  disk container privat `/root/.config/ai-conversation/`, bukan network volume.
+
+Dekripsi autentik arsip lokal telah diverifikasi, dan dump serta konfigurasi
+hasil dekripsinya cocok dengan salinan backup lokal.
+
+Untuk mendekripsi arsip **di komputer lokal**, jalankan dari root repository.
+Perintah berikut memakai environment sementara, tidak mengubah dependensi GPU:
+
+```sh
+uv run --no-project --with cryptography python - <<'PY'
+import os
+from pathlib import Path
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+os.umask(0o077)
+root = Path('.neon-backups/2026-10-05')
+data = (root / 'neon-20261005.tar.gz.aesgcm').read_bytes()
+assert data[:6] == b'KAIWA1'
+key = (root / 'neon-backup-20261005.key').read_bytes()
+clear = AESGCM(key).decrypt(data[6:18], data[18:], b'kaiwa-neon-backup-v1')
+(root / 'neon-20261005.tar.gz').write_bytes(clear)
+PY
+```
+
+Restore dump hanya ke database tujuan kosong melalui koneksi langsung, memakai
+`pg_restore --exit-on-error --single-transaction --no-owner --no-privileges`.
+Sesudahnya jalankan Alembic dan health/readiness. Transkrip Practice tetap berada dalam
+memori; migrasi database tidak mengubahnya menjadi arsip permanen.
+
+## 16. Rekaman Testing di Neon Object Storage
+
+Testing menggunakan bucket privat `kaiwa`, dengan konfigurasi S3 di runtime server
+dan `STUDY_EVIDENCE_BUCKET=kaiwa`. Retensi untuk pengujian pribadi pemilik aplikasi
+ditetapkan 30 hari setelah pemilik meminta memilih durasi operasional. Ini bukan
+standar retensi universal atau persetujuan kebijakan untuk peserta penelitian.
+
+`STUDY_EVIDENCE_DIR=/root/.config/ai-conversation/study-evidence` adalah staging
+privat mode 700 pada disk container, di luar jalur HTTP. Setelah panggilan berakhir,
+`user.wav`, `assistant.wav`, dan `events.jsonl` diunggah serta diperiksa melalui S3;
+`manifest.json` diunggah terakhir. Hanya setelah manifest tersimpan dan bisa dibaca
+kembali, checksum dicatat pada PostgreSQL Neon dan staging lokal dibuang. Upload
+gagal tidak menyelesaikan sesi. Evidence final dapat dibaca setelah container
+diganti dengan memulihkan runtime serta kredensial S3 yang sama.
+
+Housekeeping menghapus objek evidence yang berumur lebih dari 30 hari dan capture
+lokal yang ditinggalkan. Penghapusan berjalan selama API hidup; ketika API mati,
+cleanup dilanjutkan saat startup berikutnya. Metadata database tidak ikut dihapus.
+Capture aktif, objek di luar prefix `study/`, serta berkas aplikasi lain tidak dihapus.
+Panggilan yang terputus sebelum evidence final diunggah tidak dijamin pulih jika
+disk container hilang, dan tidak boleh dinyatakan sebagai sesi selesai.
+
+Konfigurasi lokal `backend/.env` juga menggunakan database dan bucket Neon, dengan
+staging lokal privat pada `backend/.study-evidence/`. Folder tersebut diabaikan Git.
+Runtime terbaru dan konfigurasi sebelum perubahan dicadangkan terenkripsi di
+`private-backups/study-neon-20261005.tar.gz.aesgcm`, menggunakan kunci backup privat
+yang sama dengan migrasi database. Salinan runtime lokal berada di folder backup
+yang diabaikan Git, bukan source.
+Practice tidak membuat rekaman studi atau objek bucket. Alamat backend dan build
+Android tetap sama. Evidence berisi offset audio serta timestamp transkrip; durasi
+terpisah Whisper/Qwen/Kokoro dan waktu playback ponsel belum dicatat otomatis.
+
+Uji Testing sintetis memakai database SQLite terisolasi dan pipeline GPU/LiveKit
+nyata: start HTTP 201, end HTTP 204, kedua track audio dan dua berkas metadata
+tersimpan di Neon, serta transkrip pulih tanpa staging lokal. Panggilan pendek
+tidak membuka sesi kedua. Objek sintetis dihapus setelah verifikasi; tidak ada
+peserta uji yang ditambahkan ke database produksi. Health/readiness HTTPS setelah
+deployment kembali HTTP 200. Playback ponsel tidak diuji ulang dalam verifikasi ini.

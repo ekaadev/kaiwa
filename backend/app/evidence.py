@@ -29,8 +29,13 @@ class EvidenceStore:
         if not directory or not days:
             return None
         try:
+            bucket = os.getenv("STUDY_EVIDENCE_BUCKET", "").strip()
+            if bucket:
+                from app.s3_evidence import S3EvidenceStore
+
+                return S3EvidenceStore(Path(directory), int(days), bucket=bucket)
             return cls(Path(directory), int(days))
-        except (ValueError, OSError):
+        except (ImportError, ValueError, OSError):
             return None
 
     def begin(self, call_id):
@@ -57,6 +62,11 @@ class EvidenceStore:
         if not manifest.is_file():
             return None
         manifest_bytes = manifest.read_bytes()
+        contents = (directory / "events.jsonl").read_bytes()
+        return self.decode_transcript(manifest_bytes, contents, expected_manifest_sha256)
+
+    @staticmethod
+    def decode_transcript(manifest_bytes, contents, expected_manifest_sha256=None):
         if (
             expected_manifest_sha256 is not None
             and hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
@@ -64,7 +74,6 @@ class EvidenceStore:
             raise RuntimeError("Evidence manifest integrity check failed")
         data = json.loads(manifest_bytes)
         expected = data["files"]["events.jsonl"]["sha256"]
-        contents = (directory / "events.jsonl").read_bytes()
         if hashlib.sha256(contents).hexdigest() != expected:
             raise RuntimeError("Evidence integrity check failed")
         events = [json.loads(line) for line in contents.splitlines()]

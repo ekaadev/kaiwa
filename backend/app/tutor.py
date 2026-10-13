@@ -25,6 +25,9 @@ class TutorConfig:
     kokoro_voices_path: Path
     llm_base_url: str
     llm_api_key: str = "local"
+    whisper_device: str = "cpu"
+    whisper_compute_type: str = "int8"
+    kokoro_execution_provider: str = "CPUExecutionProvider"
 
     @classmethod
     def from_env(cls) -> "TutorConfig | None":
@@ -34,12 +37,27 @@ class TutorConfig:
         llm = os.getenv("TUTOR_LLM_BASE_URL", "").strip().rstrip("/")
         if not (whisper and kokoro and voices and llm.startswith(("http://", "https://"))):
             return None
+        device = os.getenv("TUTOR_WHISPER_DEVICE", "cpu").strip()
+        compute_type = os.getenv(
+            "TUTOR_WHISPER_COMPUTE_TYPE", "float16" if device == "cuda" else "int8"
+        ).strip()
+        provider = os.getenv("TUTOR_KOKORO_EXECUTION_PROVIDER", "CPUExecutionProvider").strip()
+        if (
+            device not in {"cpu", "cuda"}
+            or compute_type not in {"int8", "float16", "int8_float16", "float32"}
+            or (device == "cpu" and compute_type in {"float16", "int8_float16"})
+            or provider not in {"CPUExecutionProvider", "CUDAExecutionProvider"}
+        ):
+            return None
         return cls(
             Path(whisper),
             Path(kokoro),
             Path(voices),
             llm,
             os.getenv("TUTOR_LLM_API_KEY", "local"),
+            device,
+            compute_type,
+            provider,
         )
 
     def assets_present(self) -> bool:
@@ -82,7 +100,6 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
     )
     from pipecat.processors.audio.vad_processor import VADProcessor
     from pipecat.services.openai.llm import OpenAILLMService
-    from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transcriptions.language import Language
     from pipecat.turns.user_stop import (
         SpeechTimeoutUserTurnStopStrategy,
@@ -91,12 +108,16 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
     from app.japanese_tts import JapaneseKokoroTTSService
+    from app.whisper_stt import LocalWhisperSTTService
 
     if eot_method == "adaptive":
         vad_stop_secs = 0.2
-        stop = TurnAnalyzerUserTurnStopStrategy(
-            turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=3.0))
-        )
+        turn_analyzer = LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=3.0))
+        # Pipecat 0.0.108 has no provider constructor argument for Smart Turn.
+        # Keep this per-session setting explicit even when CUDA ORT is installed.
+        if turn_analyzer._session.get_providers() != ["CPUExecutionProvider"]:
+            turn_analyzer._session.set_providers(["CPUExecutionProvider"])
+        stop = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=turn_analyzer)
     elif eot_method == "fixed":
         vad_stop_secs = 0.7
         stop = SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0)
@@ -104,10 +125,10 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
         raise ValueError("Unsupported turn method")
 
     vad = VADProcessor(vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)))
-    stt = WhisperSTTService(
-        settings=WhisperSTTService.Settings(model=str(config.whisper_path), language=None),
-        device="cpu",
-        compute_type="int8",
+    stt = LocalWhisperSTTService(
+        settings=LocalWhisperSTTService.Settings(model=str(config.whisper_path), language=None),
+        device=config.whisper_device,
+        compute_type=config.whisper_compute_type,
     )
     llm = OpenAILLMService(
         api_key=config.llm_api_key,
@@ -121,6 +142,7 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
     tts = JapaneseKokoroTTSService(
         model_path=str(config.kokoro_model_path),
         voices_path=str(config.kokoro_voices_path),
+        execution_provider=config.kokoro_execution_provider,
         settings=JapaneseKokoroTTSService.Settings(voice=KOKORO_VOICE, language=Language.JA),
     )
     aggregators = LLMContextAggregatorPair(

@@ -186,7 +186,10 @@ def create_app(
                 if app.state.study_starter is not None:
                     store = getattr(app.state.study_starter, "evidence_store", None)
                     if store is not None:
-                        await asyncio.to_thread(store.cleanup)
+                        try:
+                            await asyncio.to_thread(store.cleanup)
+                        except Exception:
+                            logger.warning("Study evidence retention cleanup failed")
                     registry = getattr(app.state.study_starter, "transcripts", None)
                     if registry is not None:
                         registry.prune()

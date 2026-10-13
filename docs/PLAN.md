@@ -8,9 +8,10 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 
 - [x] Aplikasi berbasis **Compose Multiplatform** menyediakan pilihan latihan **AI Conversation** melalui Home / Practice Call dan **Ikut Pengujian** melalui Testing / Testing Call.
 - [x] Jalur latihan meminta satu panggilan tanpa mendaftar sebagai peserta; backend menetapkan **adaptive**, dan data latihan tidak masuk data pengujian.
-- [ ] Verifikasi panggilan latihan nyata di Android sampai audio dua arah dengan tutor dan panggilan berakhir normal; bergantung pada kesiapan Fitur 4–6.
+- [x] Panggilan latihan nyata di Android berhasil dengan audio dua arah melalui LiveKit ke backend Runpod; pengguna berbicara dan jawaban tutor terdengar di ponsel pada uji coba 1 Oktober 2026.
+- [ ] Verifikasi panggilan latihan di Android berakhir normal dan transkrip final tersimpan di riwayat lokal.
 
-**Status:** alur pemilihan dan pemisahan latihan/pengujian sudah diimplementasikan. Menjalankan aplikasi native iOS ditunda dan tidak menjadi syarat penyelesaian Fitur 1 saat ini.
+**Status:** alur pemilihan dan pemisahan latihan/pengujian sudah diimplementasikan; audio dua arah pada latihan Android sudah dicoba. Akhir panggilan dan riwayat final di ponsel masih perlu diverifikasi. Menjalankan aplikasi native iOS ditunda dan tidak menjadi syarat penyelesaian Fitur 1 saat ini.
 
 ### Fitur 2 — Daftar sebagai peserta pengujian (FR-03/04)
 
@@ -38,9 +39,10 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Aplikasi memeriksa izin mikrofon sebelum setiap percobaan; backend memeriksa konfigurasi, ketersediaan model/layanan tutor, dan kapasitas panggilan. Jika pemeriksaan atau persiapan gagal, panggilan tidak dimulai dan aplikasi menampilkan pesan masalah.
 - [x] Backend menyiapkan ruang LiveKit dan token sementara khusus ruang; pipeline tutor disiapkan dan Pipecat bergabung sebelum akses diberikan ke aplikasi. Rahasia layanan tetap di backend.
 - [x] Adapter LiveKit mobile menggunakan URL dan token dari backend untuk bergabung ke ruang panggilan dan mengaktifkan mikrofon.
-- [ ] Verifikasi koneksi nyata di Android: aplikasi dan tutor berada di ruang yang sama, mikrofon tersambung, serta kegagalan layanan/koneksi ditangani. Pemeriksaan kesiapan dan tes dengan layanan tiruan belum membuktikan koneksi nyata.
+- [x] Koneksi latihan nyata di Android berhasil: aplikasi dan tutor terhubung melalui ruang LiveKit yang sama, mikrofon mengirim suara, dan audio jawaban tutor diterima di ponsel.
+- [ ] Verifikasi penanganan kegagalan layanan/koneksi pada panggilan nyata di Android, termasuk saat koneksi terputus.
 
-**Status:** Fitur 4 sebagian selesai. Petunjuk latihan di Home, penyelarasan FR-07, dan verifikasi koneksi nyata di Android masih diperlukan. Menjalankan aplikasi native iOS tetap ditunda.
+**Status:** koneksi latihan nyata di Android sudah berhasil. Fitur 4 masih memerlukan petunjuk latihan di Home, penyelarasan FR-07, dan verifikasi penanganan kegagalan layanan/koneksi. Menjalankan aplikasi native iOS tetap ditunda.
 
 ### Fitur 5 — Tutor mendengar dan menjawab (FR-10/11)
 
@@ -48,9 +50,11 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Aturan akhir giliran dikonfigurasi: fixed memakai 700 ms diam; adaptive memakai Smart Turn v3.2 dengan batas diam 3.000 ms bila ujaran terus dinilai belum selesai.
 - [x] Pipeline menghubungkan Whisper multilingual untuk transkripsi, Qwen3-1.7B untuk jawaban, dan Kokoro untuk suara Jepang. Kedua kondisi memakai alur yang sama kecuali aturan akhir giliran.
 - [x] Prompt tutor mengarahkan jawaban dalam bahasa Jepang, 1–3 kalimat dan maksimal satu pertanyaan, serta menerima ujaran pengguna dalam bahasa Inggris/Jepang.
-- [ ] Verifikasi percakapan suara lengkap dengan inferensi nyata: audio Android diterima, ujaran Inggris/Jepang ditranskripsikan, fixed/adaptive mengambil giliran sesuai aturan, dan jawaban tutor terdengar di ponsel serta memenuhi batas bahasa, kalimat, dan pertanyaan. Konfigurasi pipeline dan prompt belum membuktikan hasil tersebut.
+- [x] Alur suara latihan dengan inferensi nyata berhasil: ujaran dari Android diproses oleh Whisper, Qwen menghasilkan jawaban, dan suara Kokoro dikirim melalui LiveKit serta terdengar di ponsel.
+- [ ] Verifikasi akurasi transkripsi ujaran Inggris/Jepang, perilaku fixed/adaptive, serta kepatuhan jawaban terhadap batas bahasa, kalimat, dan pertanyaan pada panggilan nyata.
+- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android.
 
-**Status:** Fitur 5 sebagian selesai. Pipeline dan aturan tutor sudah diimplementasikan; perilaku akhir giliran, hasil jawaban Qwen, dan alur suara lengkap masih perlu validasi nyata.
+**Status:** alur suara latihan Android sudah berjalan dengan inferensi nyata. Fitur 5 masih memerlukan validasi perilaku akhir giliran, akurasi transkripsi, kepatuhan jawaban, serta pengukuran dan perbaikan latensi.
 
 ### Fitur 6 — Layar panggilan dan riwayat (FR-12–16)
 
@@ -97,6 +101,6 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Tes backend dan host mobile tersedia untuk aturan sesi, retry/idempotensi panggilan, izin mikrofon, pemulihan peserta, transkrip, serta penyimpanan bukti.
 - [ ] Alur Android diuji menyeluruh dengan layanan dan audio nyata: izin mikrofon, dua kondisi, panggilan gagal, retry, sesi terkunci, interupsi, dan pemisahan latihan dari pengujian. Menjalankan aplikasi native iOS ditunda.
 
-**Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; akses petugas, kebijakan penyimpanan/penghapusan, serta pengujian sistem nyata belum selesai.
+**Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; panggilan latihan Android sudah berhasil pada deployment Runpod. Akses petugas, kebijakan penyimpanan/penghapusan, serta pengujian menyeluruh dua sesi pengujian masih belum selesai.
 
 **Batas rencana:** sistem menyediakan panggilan dan data yang dibutuhkan. Rekrutmen peserta, anotasi rekaman, perhitungan statistik, dan UAT penelitian bukan fitur sistem. Sebelum dipakai peserta nyata, teks persetujuan dan kebijakan privasi harus disahkan.
