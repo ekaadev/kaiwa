@@ -52,7 +52,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Prompt tutor mengarahkan jawaban dalam bahasa Jepang, 1–3 kalimat dan maksimal satu pertanyaan, serta menerima ujaran pengguna dalam bahasa Inggris/Jepang.
 - [x] Alur suara latihan dengan inferensi nyata berhasil: ujaran dari Android diproses oleh Whisper, Qwen menghasilkan jawaban, dan suara Kokoro dikirim melalui LiveKit serta terdengar di ponsel.
 - [ ] Verifikasi akurasi transkripsi ujaran Inggris/Jepang, perilaku fixed/adaptive, serta kepatuhan jawaban terhadap batas bahasa, kalimat, dan pertanyaan pada panggilan nyata.
-- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android.
+- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android. Pengukuran awal pada GPU RTX 4090 (uji sintetis, bukan percakapan nyata): Whisper dan Kokoro masing-masing di bawah 0,2 detik per inferensi setelah warm-up; jeda dari ujaran selesai sampai audio tutor pertama sekitar 1,4–5,6 detik, dengan jeda terlama disebabkan Smart Turn menilai ujaran belum selesai lalu menunggu batas hening 3 detik; audio tutor pertama pada smoke test LiveKit 8,0 detik setelah panggilan dimulai.
 
 **Status:** alur suara latihan Android sudah berjalan dengan inferensi nyata. Fitur 5 masih memerlukan validasi perilaku akhir giliran, akurasi transkripsi, kepatuhan jawaban, serta pengukuran dan perbaikan latensi.
 
