@@ -1,0 +1,6 @@
+# Local Neon project link, generated credentials, and dependencies.
+/.neon
+/.env
+/.env.*
+!/.env.example
+/node_modules/

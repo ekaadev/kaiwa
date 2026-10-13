@@ -1,0 +1,14 @@
+# Private database/migration backups and runtime credentials.
+/.neon-backups/
+/.env
+/.env.*
+!/.env.example
+
+# Local agent tooling (vendor skills and their lock file).
+/.agents/
+/skills-lock.json
+/.codex/
+/.aws/
+
+# Tool caches.
+.ruff_cache/
