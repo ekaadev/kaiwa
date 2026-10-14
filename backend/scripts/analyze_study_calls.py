@@ -1,16 +1,23 @@
 """Compute per-turn latency and false cut-off lower bounds from study evidence.
 
-Usage (from backend/): uv run --env-file .env python scripts/analyze_study_calls.py [OUT_DIR]
+Usage (from backend/):
+    uv run --env-file .env python scripts/analyze_study_calls.py [OUT_DIR]
+    python scripts/analyze_study_calls.py --from-export EXPORT_DIR [OUT_DIR]
+
+The first form reads evidence from the database and evidence storage on the server. The second
+form reads a folder produced by export_study_evidence.py and needs no credentials, so analysis can
+run on a private workstation. Every events.jsonl is checked against its manifest checksum.
 Output files are written privately (mode 700). Automatic rates are LOWER BOUNDS only; the real
 false cut-off rate needs manual annotation of annotation_sample.csv.
 """
 
+import argparse
 import csv
+import hashlib
 import json
 import os
 import random
 import statistics
-import sys
 from pathlib import Path
 
 WINDOWS = (1.0, 2.0, 3.0)
@@ -149,15 +156,13 @@ def write_csv(path: Path, rows: list[dict]) -> None:
     path.chmod(0o600)
 
 
-def main() -> None:
+def rows_from_server() -> list[dict]:
     from sqlalchemy import create_engine, select
     from sqlalchemy.orm import Session
 
     from app.evidence import EvidenceStore
     from app.models import StudyAttempt, StudyEvidence
 
-    out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else ".study-analysis")
-    out_dir.mkdir(mode=0o700, exist_ok=True)
     store = EvidenceStore.from_env()
     if store is None:
         raise SystemExit("Study evidence storage is not configured")
@@ -174,6 +179,29 @@ def main() -> None:
                 continue
             for row in analyze_events(load_events(result)):
                 rows.append({"attempt_id": str(attempt.id), **row})
+    return rows
+
+
+def rows_from_export(export_dir: Path) -> tuple[list[dict], list[str]]:
+    """Analyze an export folder; attempts whose events fail the manifest check are skipped."""
+    rows, skipped = [], []
+    for folder in sorted(p for p in export_dir.iterdir() if p.is_dir()):
+        try:
+            manifest = json.loads((folder / "manifest.json").read_text())
+            contents = (folder / "events.jsonl").read_bytes()
+            if hashlib.sha256(contents).hexdigest() != manifest["files"]["events.jsonl"]["sha256"]:
+                raise ValueError("checksum mismatch")
+            events = load_events(contents.decode())
+        except (OSError, KeyError, ValueError):
+            skipped.append(folder.name)
+            continue
+        for row in analyze_events(events):
+            rows.append({"attempt_id": folder.name, **row})
+    return rows, skipped
+
+
+def write_outputs(rows: list[dict], out_dir: Path) -> None:
+    out_dir.mkdir(mode=0o700, exist_ok=True)
     write_csv(out_dir / "turns.csv", rows)
     write_csv(out_dir / "summary.csv", summarize(rows))
     rng = random.Random(0)
@@ -191,6 +219,22 @@ def main() -> None:
                 }
             )
     write_csv(out_dir / "annotation_sample.csv", sample)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("out_dir", nargs="?", default=".study-analysis")
+    parser.add_argument("--from-export", metavar="EXPORT_DIR", type=Path)
+    args = parser.parse_args()
+    if args.from_export is not None:
+        if not args.from_export.is_dir():
+            raise SystemExit(f"{args.from_export} is not a directory")
+        rows, skipped = rows_from_export(args.from_export)
+        for name in skipped:
+            print(f"SKIPPED {name}: missing or unverified events.jsonl")
+    else:
+        rows = rows_from_server()
+    write_outputs(rows, Path(args.out_dir))
     print(
         "WARNING: user_resumed_* rates are lower bounds on false cut-off; "
         "annotate annotation_sample.csv for the true rate."

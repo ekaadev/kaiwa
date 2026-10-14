@@ -102,6 +102,7 @@ Hanya jalur study (latihan tidak mencatat data penelitian). Panggilan study mena
 
 - **Dashboard operator:** set `MONITOR_TOKEN` (kosong = dinonaktifkan), buka `/monitor` lewat HTTPS atau tunnel SSH. JSON di `GET /v1/monitor/calls` (bearer). Tidak memuat teks transkrip atau audio.
 - **Analisis:** `uv run --env-file .env python scripts/analyze_study_calls.py [OUT_DIR]` menulis `turns.csv`, `summary.csv`, dan `annotation_sample.csv` ke direktori privat (`.study-analysis/`). Satu EOT dicatat per VAD berhenti; `overlaps_tutor_audio` bernilai kosong bila bukti tidak memuat `bot_speaking`. Angka false cut-off otomatis hanya **batas bawah** (pengguna melanjutkan bicara dalam T = 1/2/3 s setelah EOT); tingkat sebenarnya memerlukan anotasi manual sampel.
+- **Analisis dari hasil ekspor (tanpa kredensial):** `uv run python scripts/analyze_study_calls.py --from-export .study-export [OUT_DIR]` membaca folder dari `export_study_evidence.py`, memeriksa checksum `events.jsonl` terhadap manifest, dan melewati percobaan yang tidak cocok. Hasilnya sama dengan analisis di server.
 
 ## Skrip
 

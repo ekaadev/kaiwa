@@ -84,3 +84,33 @@ def test_export_never_overwrites_an_existing_attempt_folder(tmp_path):
     export.run_export(store, [row], out, who="x@y")
     done, failed = export.run_export(store, [row], out, who="x@y")
     assert done == [] and "FileExistsError" in failed[0]
+
+
+analyze_spec = importlib.util.spec_from_file_location(
+    "analyze_export", Path(__file__).parents[1] / "scripts" / "analyze_study_calls.py"
+)
+analyze = importlib.util.module_from_spec(analyze_spec)
+analyze_spec.loader.exec_module(analyze)
+
+
+def test_analysis_runs_on_an_export_folder_without_credentials(tmp_path):
+    store, row = make(tmp_path)
+    out = tmp_path / "out"
+    export.run_export(store, [row], out, who="researcher@lab")
+    rows, skipped = analyze.rows_from_export(out)
+    assert skipped == []
+    assert [r["attempt_id"] for r in rows] == [row["attempt_id"]]
+    assert rows[0]["method"] == "fixed"
+    analyze.write_outputs(rows, tmp_path / "analysis")
+    names = {p.name for p in (tmp_path / "analysis").iterdir()}
+    assert names == {"turns.csv", "summary.csv", "annotation_sample.csv"}
+
+
+def test_analysis_skips_tampered_events(tmp_path):
+    store, row = make(tmp_path)
+    out = tmp_path / "out"
+    export.run_export(store, [row], out, who="researcher@lab")
+    events = out / row["attempt_id"] / "events.jsonl"
+    events.write_text(events.read_text() + "\n")
+    rows, skipped = analyze.rows_from_export(out)
+    assert rows == [] and skipped == [row["attempt_id"]]

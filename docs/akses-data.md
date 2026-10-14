@@ -23,7 +23,10 @@ Menambah petugas mengubah dokumen ini lebih dulu, sebelum kredensial dibagikan.
    `.env` lokal peneliti yang tidak dikomit.
 2. Pengambilan data dilakukan dengan `backend/scripts/export_study_evidence.py` di server, atau
    dengan `analyze_study_calls.py` untuk hasil olahan. Keduanya memeriksa checksum manifest.
-3. Setiap ekspor dicatat di `access.log` pada direktori keluaran (pengguna sistem operasi, waktu,
+3. Hasil ekspor dapat dibawa ke perangkat peneliti (misalnya dengan `scp` lewat SSH), lalu
+   dianalisis tanpa kredensial dengan `analyze_study_calls.py --from-export <folder>`. Folder
+   ekspor memuat teks percakapan dan rekaman suara, sehingga perlakuannya sama dengan data asli.
+4. Setiap ekspor dicatat di `access.log` pada direktori keluaran (pengguna sistem operasi, waktu,
    percobaan yang berhasil dan gagal). Tidak ada token peserta yang diekspor.
 
 ## Batasan
