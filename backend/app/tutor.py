@@ -2,10 +2,14 @@
 
 import asyncio
 import json
+import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 QWEN_MODEL = "Qwen/Qwen3-1.7B"
 KOKORO_VOICE = "jf_alpha"
@@ -150,3 +154,105 @@ def build_tutor_processors(config: TutorConfig, *, eot_method: str = "adaptive")
         user_params=LLMUserAggregatorParams(user_turn_strategies=UserTurnStrategies(stop=[stop])),
     )
     return [vad, stt, aggregators.user(), llm, tts, aggregators.assistant()]
+
+
+def _warm_whisper(config: TutorConfig) -> None:
+    import numpy as np
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(
+        str(config.whisper_path),
+        device=config.whisper_device,
+        compute_type=config.whisper_compute_type,
+    )
+    try:
+        segments, _ = model.transcribe(np.zeros(16000, dtype=np.float32))
+        list(segments)
+    finally:
+        del model
+
+
+def _warm_kokoro(config: TutorConfig) -> None:
+    from pipecat.transcriptions.language import Language
+
+    from app.japanese_tts import JapaneseKokoroTTSService
+
+    service = JapaneseKokoroTTSService(
+        model_path=str(config.kokoro_model_path),
+        voices_path=str(config.kokoro_voices_path),
+        execution_provider=config.kokoro_execution_provider,
+        settings=JapaneseKokoroTTSService.Settings(voice=KOKORO_VOICE, language=Language.JA),
+    )
+    try:
+        phonemes, _ = service._japanese_g2p("こんにちは。")
+        service._kokoro.create(phonemes, voice=KOKORO_VOICE, speed=1.0, is_phonemes=True)
+    finally:
+        service._kokoro = None
+
+
+def _warm_smart_turn(config: TutorConfig) -> None:
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+
+    analyzer = LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=3.0))
+    if analyzer._session.get_providers() != ["CPUExecutionProvider"]:
+        analyzer._session.set_providers(["CPUExecutionProvider"])
+
+
+def _warm_llm(config: TutorConfig) -> None:
+    body = json.dumps(
+        {
+            "model": QWEN_MODEL,
+            "max_tokens": 1,
+            "messages": [
+                {"role": "system", "content": TUTOR_INSTRUCTIONS},
+                {"role": "user", "content": "こんにちは。"},
+            ],
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+    ).encode()
+    request = Request(
+        f"{config.llm_base_url}/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {config.llm_api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urlopen(request, timeout=60) as response:
+        response.read()
+
+
+# Sequential on purpose: each model is released before the next loads, so warm-up never holds more
+# GPU memory than one call does.
+_STEPS = (
+    ("whisper", _warm_whisper),
+    ("kokoro", _warm_kokoro),
+    ("smart_turn", _warm_smart_turn),
+    ("llm", _warm_llm),
+)
+
+
+async def warm_up(config: TutorConfig) -> dict[str, dict]:
+    """Run one throwaway inference per model so the first real call skips one-time costs.
+
+    One-time costs are CUDA/cuDNN initialisation, kernel compilation, and cold file caches. Models
+    are still constructed per call, so this does not remove per-call model loading. A failing
+    step is recorded and never stops the others or the API.
+    """
+    if not config.assets_present():
+        return {}
+    results: dict[str, dict] = {}
+    for name, step in _STEPS:
+        started = time.monotonic()
+        try:
+            await asyncio.to_thread(step, config)
+            results[name] = {"ok": True, "seconds": round(time.monotonic() - started, 2)}
+        except Exception as error:
+            results[name] = {
+                "ok": False,
+                "seconds": round(time.monotonic() - started, 2),
+                "error": type(error).__name__,
+            }
+    logger.info("Tutor warm-up finished: %s", results)
+    return results

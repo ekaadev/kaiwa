@@ -135,3 +135,17 @@ def test_missing_cloud_credentials_disable_study_storage_without_local_fallback(
     monkeypatch.setenv("STUDY_EVIDENCE_BUCKET", "kaiwa")
     monkeypatch.delenv("AWS_ENDPOINT_URL_S3", raising=False)
     assert EvidenceStore.from_env() is None
+
+
+def test_cloud_fetch_returns_only_verified_files(tmp_path):
+    client = Storage()
+    store = S3EvidenceStore(tmp_path / "capture", 30, bucket="kaiwa", client=client)
+    call_id = uuid4()
+    digest = asyncio.run(record(store.begin(call_id)))
+    manifest, files = store.fetch(call_id, digest)
+    assert set(files) == {"user.wav", "assistant.wav", "events.jsonl"}
+    assert manifest["media_ms"] == 120000
+    client.objects[store.prefix(call_id) + "assistant.wav"]["body"] += b"x"
+    with pytest.raises(RuntimeError, match="assistant.wav"):
+        store.fetch(call_id, digest)
+    assert store.fetch(uuid4()) is None

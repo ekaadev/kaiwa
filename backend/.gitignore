@@ -9,3 +9,4 @@ __pycache__/
 *.sqlite
 .study-evidence/
 .study-analysis/
+.study-export/

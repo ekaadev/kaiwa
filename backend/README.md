@@ -110,6 +110,27 @@ Hanya jalur study (latihan tidak mencatat data penelitian). Panggilan study mena
 | `scripts/try_whisper_microphone.py` | Transkripsi mikrofon lokal (`arecord`), tanpa menyimpan audio |
 | `scripts/benchmark_speech.py` | Benchmark sintetis CPU vs GPU untuk Whisper/Kokoro; tidak membuka panggilan |
 | `scripts/install_gpu_trial.sh` | Membuat `.venv-gpu` dengan `onnxruntime-gpu` |
+| `scripts/analyze_study_calls.py` | Latensi per giliran dan batas bawah false cut-off dari bukti study (lihat Monitoring pengujian) |
+| `scripts/export_study_evidence.py` | Ekspor bukti study terverifikasi untuk petugas, dijalankan di server |
+
+### Ekspor bukti (petugas)
+
+```sh
+uv run --env-file .env python scripts/export_study_evidence.py --all --out .study-export
+uv run --env-file .env python scripts/export_study_evidence.py --attempt <UUID> --out .study-export
+```
+
+Setiap berkas diperiksa terhadap checksum manifest di database; berkas yang tidak cocok tidak diekspor
+dan dicatat sebagai gagal. Keluaran privat (direktori 700, berkas 600), tidak pernah menimpa, dan
+setiap proses dicatat di `access.log` bersama pengguna sistem operasi. Tidak ada token peserta.
+Ekspor **tidak dienkripsi**: simpan di penyimpanan terenkripsi dan hapus setelah analisis.
+
+### Pemanasan model
+
+Saat API menyala dengan konfigurasi tutor, satu inferensi dummy dijalankan untuk Whisper, Kokoro,
+Smart Turn, dan Qwen agar panggilan pertama tidak menanggung biaya sekali-per-proses. Berjalan di
+latar belakang tanpa menahan readiness; langkah yang gagal hanya dicatat. Nonaktifkan dengan
+`TUTOR_WARMUP=0`. Model Whisper/Kokoro tetap dibangun per panggilan.
 
 ## Tes
 

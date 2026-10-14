@@ -1,5 +1,4 @@
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from enrollment import enroll_request
@@ -118,12 +117,30 @@ def test_different_keys_create_different_participants_with_different_tokens(back
     assert a["resume_token"] != b["resume_token"]
 
 
-def test_enrollment_race_on_same_key_yields_one_participant(backend):
+def test_enrollment_losing_a_race_returns_the_winner_without_a_second_participant(
+    backend, monkeypatch
+):
+    """Force both pre-checks to miss so the insert hits the unique key, as a lost race would."""
+    from app import study
+
     client, engine = backend
     key = "r" * 40
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        responses = list(pool.map(lambda _: enroll_request(client, key), range(6)))
-    assert {r.status_code for r in responses} == {201}
-    assert len({r.json()["participant_id"] for r in responses}) == 1
+    first = enroll_request(client, key).json()
+    real = study._existing
+    misses = {"left": 2}
+
+    def stale_then_real(db, digest):
+        if misses["left"] > 0:
+            misses["left"] -= 1
+            return None
+        return real(db, digest)
+
+    monkeypatch.setattr(study, "_existing", stale_then_real)
+    replay = enroll_request(client, key)
+    assert replay.status_code == 201
+    assert replay.json()["participant_id"] == first["participant_id"]
+    assert replay.json()["resume_token"] == first["resume_token"]
     with Session(engine) as db:
         assert len(db.scalars(select(Participant)).all()) == 1
+        counter = db.get(AllocationCounter, 1)
+        assert counter.fixed_first + counter.adaptive_first == 1

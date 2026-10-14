@@ -113,6 +113,9 @@ class S3EvidenceStore(EvidenceStore):
             raise RuntimeError("Stored evidence is missing events")
         return self.decode_transcript(manifest, contents, expected_manifest_sha256)
 
+    def _read_named(self, call_id, name):
+        return self.read(self.prefix(call_id) + name)
+
     def events(self, call_id, expected_manifest_sha256=None):
         prefix = self.prefix(call_id)
         manifest = self.read(prefix + "manifest.json")

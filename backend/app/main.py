@@ -37,6 +37,7 @@ from app.study_calls import (
     reserve,
     utc,
 )
+from app.tutor import TutorConfig, warm_up
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -226,9 +227,17 @@ def create_app(
                 await asyncio.sleep(60)
 
         cleanup_task = asyncio.create_task(housekeeping())
+        warm_task = None
+        tutor_config = TutorConfig.from_env() if owns_engine else None
+        if tutor_config is not None and os.getenv("TUTOR_WARMUP", "1").strip() != "0":
+            # Never blocks startup or readiness; failures are logged inside warm_up per step.
+            warm_task = asyncio.create_task(warm_up(tutor_config))
         try:
             yield
         finally:
+            if warm_task is not None:
+                warm_task.cancel()
+                await asyncio.gather(warm_task, return_exceptions=True)
             cleanup_task.cancel()
             await asyncio.gather(cleanup_task, return_exceptions=True)
             if owned_starter is not None:

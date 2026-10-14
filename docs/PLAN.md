@@ -52,7 +52,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Prompt tutor mengarahkan jawaban dalam bahasa Jepang, 1–3 kalimat dan maksimal satu pertanyaan, serta menerima ujaran pengguna dalam bahasa Inggris/Jepang.
 - [x] Alur suara latihan dengan inferensi nyata berhasil: ujaran dari Android diproses oleh Whisper, Qwen menghasilkan jawaban, dan suara Kokoro dikirim melalui LiveKit serta terdengar di ponsel.
 - [ ] Verifikasi akurasi transkripsi ujaran Inggris/Jepang, perilaku fixed/adaptive, serta kepatuhan jawaban terhadap batas bahasa, kalimat, dan pertanyaan pada panggilan nyata.
-- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android. Pengukuran awal pada GPU RTX 4090 (uji sintetis, bukan percakapan nyata): Whisper dan Kokoro masing-masing di bawah 0,2 detik per inferensi setelah warm-up; jeda dari ujaran selesai sampai audio tutor pertama sekitar 1,4–5,6 detik, dengan jeda terlama disebabkan Smart Turn menilai ujaran belum selesai lalu menunggu batas hening 3 detik; audio tutor pertama pada smoke test LiveKit 8,0 detik setelah panggilan dimulai. Pada dua percakapan nyata adaptive di Android (pod baru menyala), ujaran selesai sampai audio tutor pertama di server 1,5 dan 4,1 detik, dengan tahap setelah keputusan EOT (STT, LLM, TTS) terlama 3,9 detik; belum ada data fixed.
+- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android. Pengukuran awal pada GPU RTX 4090 (uji sintetis, bukan percakapan nyata): Whisper dan Kokoro masing-masing di bawah 0,2 detik per inferensi setelah warm-up; jeda dari ujaran selesai sampai audio tutor pertama sekitar 1,4–5,6 detik, dengan jeda terlama disebabkan Smart Turn menilai ujaran belum selesai lalu menunggu batas hening 3 detik; audio tutor pertama pada smoke test LiveKit 8,0 detik setelah panggilan dimulai. Pada dua percakapan nyata adaptive di Android (pod baru menyala), ujaran selesai sampai audio tutor pertama di server 1,5 dan 4,1 detik, dengan tahap setelah keputusan EOT (STT, LLM, TTS) terlama 3,9 detik; belum ada data fixed. Pemanasan model satu kali per proses (`TUTOR_WARMUP`, default aktif) sudah ada di startup API; efeknya belum diukur di pod, dan Whisper/Kokoro tetap dibangun per panggilan.
 
 **Status:** alur suara latihan Android sudah berjalan dengan inferensi nyata. Fitur 5 masih memerlukan validasi perilaku akhir giliran, akurasi transkripsi, kepatuhan jawaban, serta pengukuran dan perbaikan latensi.
 
@@ -94,14 +94,14 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 ### Fitur 9 — Akses data dan kesiapan sistem (FR-19)
 
 - [x] Backend mensyaratkan direktori bukti privat dan tidak menyediakan unduhan rekaman publik. Akses transkrip peserta memerlukan token dan pemeriksaan kepemilikan panggilan.
-- [ ] Akses pengambilan rekaman dan catatan oleh petugas berwenang ditetapkan dan diverifikasi. Saat ini pemeriksaan rekaman melalui akses filesystem server; API akses/ekspor petugas belum tersedia.
+- [ ] Akses pengambilan rekaman dan catatan oleh petugas berwenang ditetapkan dan diverifikasi. Ekspor lewat CLI di server sudah ada (`scripts/export_study_evidence.py`: verifikasi checksum, folder privat, log akses, tanpa menimpa); belum ditentukan siapa petugas berwenangnya dan belum dicoba pada bucket Neon di server. API HTTP untuk petugas tidak dibuat.
 - [x] Backend mensyaratkan konfigurasi masa retensi dan menyediakan penghapusan berkas bukti yang kedaluwarsa, termasuk rekaman yang belum selesai.
 - [ ] Kebijakan penyimpanan, masa retensi, dan penghapusan data disahkan serta diterapkan pada penyimpanan deployment. Penghapusan berkas otomatis belum mencakup penghapusan metadata peserta/percobaan di database.
 - [x] Struktur database diperbarui melalui migrasi Alembic. Server memeriksa revisi yang diperlukan saat menyala dan tidak membuat tabel deployment secara otomatis.
 - [x] Tes backend dan host mobile tersedia untuk aturan sesi, retry/idempotensi panggilan, izin mikrofon, pemulihan peserta, transkrip, serta penyimpanan bukti.
 - [ ] Alur Android diuji menyeluruh dengan layanan dan audio nyata: izin mikrofon, dua kondisi, panggilan gagal, retry, sesi terkunci, interupsi, dan pemisahan latihan dari pengujian. Menjalankan aplikasi native iOS ditunda.
 
-**Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; panggilan latihan Android sudah berhasil pada deployment Runpod. Akses petugas, kebijakan penyimpanan/penghapusan, serta pengujian menyeluruh dua sesi pengujian masih belum selesai.
+**Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; panggilan latihan Android sudah berhasil pada deployment Runpod. Penetapan petugas berwenang dan uji ekspor di server, kebijakan penyimpanan/penghapusan, serta pengujian menyeluruh dua sesi pengujian masih belum selesai.
 
 ## Prioritas 4 — Monitoring pengujian
 

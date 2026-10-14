@@ -77,6 +77,37 @@ class EvidenceStore:
             expected_manifest_sha256,
         )
 
+    def _read_named(self, call_id, name):
+        path = self.root / str(call_id) / name
+        return path.read_bytes() if path.is_file() else None
+
+    def fetch(self, call_id, expected_manifest_sha256=None):
+        """Integrity-checked (manifest, {file name: bytes}) for export, or None without evidence.
+
+        Every file listed in the manifest must exist and match its recorded SHA-256 and size.
+        """
+        manifest_bytes = self._read_named(call_id, "manifest.json")
+        if manifest_bytes is None:
+            return None
+        if (
+            expected_manifest_sha256 is not None
+            and hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
+        ):
+            raise RuntimeError("Evidence manifest integrity check failed")
+        manifest = json.loads(manifest_bytes)
+        files = {}
+        for name, expected in manifest["files"].items():
+            contents = self._read_named(call_id, name)
+            if contents is None:
+                raise RuntimeError(f"Stored evidence is missing {name}")
+            if (
+                len(contents) != expected["bytes"]
+                or hashlib.sha256(contents).hexdigest() != expected["sha256"]
+            ):
+                raise RuntimeError(f"Evidence integrity check failed for {name}")
+            files[name] = contents
+        return manifest, files
+
     @staticmethod
     def verified_events(manifest_bytes, contents, expected_manifest_sha256=None):
         if (
