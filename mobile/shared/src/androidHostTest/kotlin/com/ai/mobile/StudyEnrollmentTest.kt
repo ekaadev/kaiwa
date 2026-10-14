@@ -28,6 +28,7 @@ class StudyEnrollmentTest {
         var permissionPrompts = 0
         var permissionGate: CompletableDeferred<Boolean>? = null
         var storageFails = false
+        val enrollKeys = CopyOnWriteArrayList<String>()
         override suspend fun requestMicrophone(): Boolean {
             events.add("permission")
             if (permissionGranted) return true
@@ -41,21 +42,24 @@ class StudyEnrollmentTest {
         override fun openPermissionSettings() = Unit
         override fun readSecret(key: String) = secrets[key]
         override fun writeSecret(key: String, value: String?) {
-            events.add("save")
-            if (storageFails) error("Test storage failure")
+            // Only the resume credential counts as "save"; the enrollment key is bookkeeping.
+            if (key.startsWith("study:")) events.add("save")
+            if (storageFails && key.startsWith("study:")) error("Test storage failure")
             if (value == null) secrets.remove(key) else secrets[key] = value
         }
     }
 
-    private inner class Fixture(val native: Native = Native(), val failRequest: Boolean = false, val url: String = "https://study.example", val development: Boolean = false, val readyCalls: Boolean = false) {
+    private inner class Fixture(val native: Native = Native(), var failRequest: Boolean = false, val url: String = "https://study.example", val development: Boolean = false, val readyCalls: Boolean = false) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val context: Context = ApplicationProvider.getApplicationContext()
         val suffix = System.nanoTime()
         val database = Room.databaseBuilder<ConversationDatabase>(context, File(context.filesDir, "enroll-$suffix.db").absolutePath).setQueryCoroutineContext(Dispatchers.IO).build()
         val settings = SettingsStore(PreferenceDataStoreFactory.createWithPath(scope = scope, produceFile = { File(context.filesDir, "enroll-$suffix.preferences_pb").absolutePath.toPath() }))
         val api = object : ConversationApi() {
-            override suspend fun enroll(server: String): Enrollment {
+            override suspend fun enroll(server: String, key: String): Enrollment {
                 native.events.add("enroll")
+                assertTrue(key.length >= 32, "enrollment key must be strong")
+                native.enrollKeys.add(key)
                 assertEquals(url, server)
                 if (failRequest) throw ApiFailure(503, "The service is unavailable.")
                 return enrollment
@@ -185,10 +189,40 @@ class StudyEnrollmentTest {
             state.agreeToStudy()
             await { !state.joiningStudy && state.studySetupError != null }
             assertTrue(state.studySetupOpen)
-            assertTrue(fixture.native.secrets.isEmpty())
+            assertNull(fixture.native.secrets["study:https://study.example"])
             assertNull(state.participant)
             assertTrue(state.token.isEmpty())
             assertEquals(listOf("permission", "enroll"), fixture.native.events.toList())
+        } finally { fixture.close(state) }
+    }
+
+    @Test fun retriesAndRestartsReuseOneEnrollmentKeyUntilTheCredentialIsSaved() = runBlocking {
+        val fixture = Fixture(failRequest = true)
+        val state = fixture.state()
+        val storedKey = "study-enroll:https://study.example"
+        try {
+            await { state.settingsReady }
+            state.enterTesting()
+            state.agreeToStudy()
+            await { !state.joiningStudy && state.studySetupError != null }
+            val first = fixture.native.enrollKeys.single()
+            assertEquals(first, fixture.native.secrets[storedKey])
+            // The response was lost: retrying in the same process must send the same key.
+            state.agreeToStudy()
+            await { !state.joiningStudy && fixture.native.enrollKeys.size == 2 }
+            assertEquals(listOf(first, first), fixture.native.enrollKeys.toList())
+            // After an app restart the key is read back from secure storage.
+            val restarted = fixture.state()
+            try {
+                await { restarted.settingsReady }
+                fixture.failRequest = false
+                restarted.enterTesting()
+                restarted.agreeToStudy()
+                await { !restarted.joiningStudy && restarted.participant != null }
+                assertEquals(first, fixture.native.enrollKeys.last())
+                assertNull(fixture.native.secrets[storedKey])
+                assertEquals(enrollment.resume_token, fixture.native.secrets["study:https://study.example"])
+            } finally { restarted.close() }
         } finally { fixture.close(state) }
     }
 

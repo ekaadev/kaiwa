@@ -49,6 +49,7 @@ class AppState(
     private var joinJob: Job? = null
     private var refreshJob: Job? = null
     private var pendingEnrollment: Enrollment? = null
+    private var enrollmentKey: String? = null
     private var callJob: Job? = null
     private var historyJob: Job? = null
     private var activeToken: String? = null
@@ -162,7 +163,8 @@ class AppState(
                 }
                 studyJoinPhase = StudyJoinPhase.Registering
                 // Retain the issued credential if secure storage fails, so Retry saves the same participant.
-                val enrollment = pendingEnrollment ?: api.enroll(server).also { pendingEnrollment = it }
+                val enrollment = pendingEnrollment
+                    ?: api.enroll(server, enrollmentKeyFor(server)).also { pendingEnrollment = it }
                 check(enrollment.resume_token.isNotBlank() && enrollment.participant_id.isNotBlank())
                 try {
                     services.calls.writeSecret("study:$server", enrollment.resume_token)
@@ -174,6 +176,7 @@ class AppState(
                 token = enrollment.resume_token
                 participant = enrollment.participant()
                 pendingEnrollment = null
+                clearEnrollmentKey(server)
                 selectedOrdinal = 1
                 watchHistory()
                 studySetupOpen = false
@@ -187,6 +190,26 @@ class AppState(
                 studyJoinPhase = StudyJoinPhase.Consent
             }
         }
+    }
+
+    /**
+     * One random key per enrollment attempt, kept in secure storage so a lost response followed by
+     * an app restart still resolves to the same participant. It is as sensitive as the resume token.
+     */
+    private fun enrollmentKeyFor(server: String): String {
+        enrollmentKey?.let { return it }
+        val storageKey = "study-enroll:$server"
+        val stored = runCatching { services.calls.readSecret(storageKey) }.getOrNull()
+        val key = stored?.takeIf { it.length >= 32 }
+            ?: (Uuid.random().toString() + Uuid.random().toString()).replace("-", "")
+        if (key != stored) runCatching { services.calls.writeSecret(storageKey, key) }
+        enrollmentKey = key
+        return key
+    }
+
+    private fun clearEnrollmentKey(server: String) {
+        enrollmentKey = null
+        runCatching { services.calls.writeSecret("study-enroll:$server", null) }
     }
 
     fun refresh() {

@@ -45,8 +45,11 @@ open class ConversationApi {
     open suspend fun participant(server: String, token: String): Participant =
         appJson.decodeFromString(request(server, "/v1/study/me", token))
 
-    open suspend fun enroll(server: String): Enrollment =
-        appJson.decodeFromString(request(server, "/v1/study/participants", body = "{\"accepted\":true}"))
+    /** [key] makes retries of this enrollment return the same participant; keep it secret. */
+    open suspend fun enroll(server: String, key: String): Enrollment =
+        appJson.decodeFromString(
+            request(server, "/v1/study/participants", body = "{\"accepted\":true}", key = key)
+        )
 
     open suspend fun start(server: String, token: String?, ordinal: Int?, key: String): CallCredentials {
         if (ordinal == null) request(server, "/v1/practice/readiness")
