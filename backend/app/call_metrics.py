@@ -38,6 +38,9 @@ class StudyMetricsObserver(BaseObserver):
         self._last_turn_metrics: TurnMetricsData | None = None
         self._vad_stop_ns: int | None = None
         self._awaiting_bot = False
+        # The aggregator broadcasts UserStoppedSpeakingFrame in both directions as distinct
+        # frames; accept one EOT per VAD stop so a turn is never counted twice.
+        self._eot_allowed = True
 
     async def start(self):
         await self.evidence.event({"type": "call_clock", "wall_utc_ns": time.time_ns()})
@@ -78,6 +81,7 @@ class StudyMetricsObserver(BaseObserver):
             await self._emit({"type": "vad", "state": "start"})
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._vad_stop_ns = now
+            self._eot_allowed = True
             await self._emit({"type": "vad", "state": "stop"})
         elif isinstance(frame, TranscriptionFrame):
             await self._emit({"type": "stt_final", "chars": len(frame.text)})
@@ -94,6 +98,9 @@ class StudyMetricsObserver(BaseObserver):
                         }
                     )
         elif isinstance(frame, UserStoppedSpeakingFrame):
+            if not self._eot_allowed:
+                return
+            self._eot_allowed = False
             self.turn_index += 1
             metrics = self._last_turn_metrics
             if self.method == "fixed":

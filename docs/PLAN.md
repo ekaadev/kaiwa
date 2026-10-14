@@ -111,7 +111,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Aplikasi Android melaporkan mulai/berhenti audio tutor terdekode di ponsel; backend menambahkan waktu terima server untuk estimasi selisih jam.
 - [x] Skrip analisis menghasilkan latensi per giliran, batas bawah false cut-off (T = 1/2/3 s), dan sampel anotasi manual.
 - [x] Dashboard operator langsung (`/monitor`, dilindungi `MONITOR_TOKEN`) tanpa teks transkrip atau audio.
-- [ ] Verifikasi pada panggilan nyata dua metode: kecocokan event dan waktu dengan rekaman, serta ketepatan sumber `timeout`.
+- [ ] Verifikasi pada panggilan nyata dua metode (panggilan ≥120 detik dengan banyak giliran): kecocokan event dan waktu dengan rekaman, serta ketepatan sumber `timeout`. Dua panggilan pendek adaptive pada pod GPU sudah mencatat event dan menghasilkan `turns.csv`; fixed belum dicoba.
 - [ ] Ambang dan kalibrasi deteksi mulai putar di ponsel divalidasi pada perangkat nyata.
 
 **Batas rencana:** sistem menyediakan panggilan dan data yang dibutuhkan. Rekrutmen peserta, anotasi rekaman, perhitungan statistik, dan UAT penelitian bukan fitur sistem. Sebelum dipakai peserta nyata, teks persetujuan dan kebijakan privasi harus disahkan.

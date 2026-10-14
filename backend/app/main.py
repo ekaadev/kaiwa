@@ -52,7 +52,7 @@ let t=null;try{t=sessionStorage.getItem("mt")}catch(e){}
 if(!t){t=prompt("Monitor token");try{sessionStorage.setItem("mt",t)}catch(e){}}
 const v=x=>x==null?"-":x;
 async function tick(){try{
-const r=await fetch("/v1/monitor/calls",{headers:{Authorization:"Bearer "+t}});
+const r=await fetch("v1/monitor/calls",{headers:{Authorization:"Bearer "+t}});
 if(!r.ok){s.textContent="Akses ditolak ("+r.status+")";return}
 const d=(await r.json()).calls;s.textContent=d.length+" panggilan aktif";
 b.innerHTML=d.map(c=>"<tr><td>"+c.call_id.slice(0,8)+"<td>"+c.method+"<td>"+c.elapsed_s+

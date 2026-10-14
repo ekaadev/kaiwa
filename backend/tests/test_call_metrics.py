@@ -70,6 +70,7 @@ def test_observer_records_turn_events_once_and_updates_monitor():
         )
         await push(observer, TranscriptionFrame(text="abc", user_id="u", timestamp=""))
         await push(observer, UserStoppedSpeakingFrame())
+        await push(observer, UserStoppedSpeakingFrame())  # broadcast twin, distinct frame id
         await push(observer, BotStartedSpeakingFrame())
 
     asyncio.run(run())
@@ -113,7 +114,7 @@ def test_analysis_latency_and_resumption_lower_bounds():
     assert row["latency_vad_to_server_audio_s"] == 2
     assert row["user_resumed_within_1s"] is False
     assert row["user_resumed_within_2s"] is True
-    assert row["overlaps_tutor_audio"] is False
+    assert row["overlaps_tutor_audio"] is None  # no bot_speaking events in this evidence
     assert row["latency_vad_to_phone_s"] == 2.5
     summary = analyze.summarize([row])[0]
     assert summary["false_cutoff_lower_bound_T2s"] == 1
@@ -136,4 +137,36 @@ def test_monitor_requires_token_and_hides_when_unset(monkeypatch):
         assert denied.status_code == 401
         ok = client.get("/v1/monitor/calls", headers={"Authorization": "Bearer secret"})
         assert ok.status_code == 200 and ok.json() == {"calls": []}
-        assert client.get("/monitor").status_code == 200
+        page = client.get("/monitor")
+        assert page.status_code == 200
+        # Relative fetch keeps working behind a path-prefixed proxy.
+        assert 'fetch("v1/monitor/calls"' in page.text
+
+
+def test_analysis_drops_duplicate_eot_and_uses_bot_speaking_for_overlap():
+    s = 1_000_000_000
+
+    def vad(t, state):
+        return {"type": "vad", "offset_ns": int(t * s), "state": state}
+
+    def bot(t, state):
+        return {"type": "bot_speaking", "offset_ns": int(t * s), "state": state}
+
+    eot = {"type": "eot", "method": "adaptive", "source": "smart_turn"}
+    events = [
+        vad(1, "stop"),
+        {**eot, "offset_ns": 1 * s, "turn_index": 1},
+        {**eot, "offset_ns": int(1.001 * s), "turn_index": 2, "source": "timeout"},
+        bot(3, "start"),
+        vad(4, "start"),  # barges in while the tutor is speaking
+        bot(5, "stop"),
+        vad(9, "start"),
+    ]
+    rows = analyze.analyze_events(events)
+    assert len(rows) == 1 and rows[0]["eot_source"] == "smart_turn"
+    assert rows[0]["overlaps_tutor_audio"] is True
+
+    later = events[:5] + [bot(5, "stop"), vad(9, "start")]
+    later[4] = vad(7, "start")  # resumes after the tutor finished
+    [row] = analyze.analyze_events(later)
+    assert row["overlaps_tutor_audio"] is False

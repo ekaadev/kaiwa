@@ -36,13 +36,20 @@ def analyze_events(events: list[dict]) -> list[dict]:
         if e.get("type") == "client_audio" and e.get("event") == "remote_audio_playback_started"
     ]
     clock = next((e for e in events if e.get("type") == "call_clock"), None)
+    bot_events = [e for e in events if e.get("type") == "bot_speaking"]
     rows = []
     vad_stop = None
+    vad_stop_seen = True  # the first EOT always counts, even without a VAD stop (STT fallback)
     for e in events:
         if e.get("type") == "vad" and e["state"] == "stop":
             vad_stop = e["offset_ns"]
+            vad_stop_seen = True
         if e.get("type") != "eot":
             continue
+        if not vad_stop_seen:
+            # Older evidence recorded one EOT twice per VAD stop; keep the first only.
+            continue
+        vad_stop_seen = False
         eot = e["offset_ns"]
         bot = next((t for t in first_assistant_audio if t >= eot), None)
         resumed_after = next((t for t in vad_starts if t > eot), None)
@@ -65,9 +72,7 @@ def analyze_events(events: list[dict]) -> list[dict]:
             row[f"user_resumed_within_{int(window)}s"] = (
                 resumed_after is not None and (resumed_after - eot) / NS <= window
             )
-        row["overlaps_tutor_audio"] = (
-            bot is not None and resumed_after is not None and resumed_after >= bot
-        )
+        row["overlaps_tutor_audio"] = _overlaps(bot_events, eot, vad_starts)
         if clock is not None and bot is not None:
             estimate = _phone_time(playbacks, clock, bot)
             if estimate is not None:
@@ -76,6 +81,24 @@ def analyze_events(events: list[dict]) -> list[dict]:
                     row["latency_vad_to_phone_s"] = estimate - vad_stop / NS
         rows.append(row)
     return rows
+
+
+def _overlaps(bot_events, eot_ns, vad_starts):
+    """True if the user started speaking while the tutor's reply to this EOT was playing.
+
+    Needs bot_speaking events; returns None for evidence recorded without them.
+    """
+    start = next(
+        (e["offset_ns"] for e in bot_events if e["state"] == "start" and e["offset_ns"] >= eot_ns),
+        None,
+    )
+    if start is None:
+        return None
+    stop = next(
+        (e["offset_ns"] for e in bot_events if e["state"] == "stop" and e["offset_ns"] > start),
+        None,
+    )
+    return any(t > start and (stop is None or t < stop) for t in vad_starts)
 
 
 def _phone_time(playbacks, clock, bot_ns):
