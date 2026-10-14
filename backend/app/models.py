@@ -37,6 +37,8 @@ class Participant(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     order: Mapped[str] = mapped_column(String(2), nullable=False)  # AB = fixed first
+    # SHA-256 of the enrollment Idempotency-Key; NULL only for rows created before 0004.
+    enrollment_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
     consent_version: Mapped[str] = mapped_column(String(64), nullable=False)
     consented_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

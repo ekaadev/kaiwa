@@ -1,6 +1,7 @@
 from uuid import UUID
 
 import pytest
+from enrollment import enroll_request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -246,7 +247,7 @@ def test_practice_call_does_not_change_existing_study_progress(engine):
             )
 
     with TestClient(create_app(engine, practice_starter=ReadyVoiceService())) as client:
-        created = client.post("/v1/study/participants", json={"accepted": True}).json()
+        created = enroll_request(client).json()
         headers = {"Authorization": f"Bearer {created['resume_token']}"}
         before = client.get("/v1/study/me", headers=headers).json()
 

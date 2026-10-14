@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from enrollment import enroll_request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -155,7 +156,7 @@ def test_normal_study_end_unlocks_second_only_after_durable_evidence(
         monkeypatch.setattr("app.evidence.EvidenceWriter._finalize", disk_full)
     starter = LiveKitStudyStarter(Gateway(), Tutor(), sessions, evidence_store=store)
     with TestClient(create_app(engine, study_starter=starter)) as client:
-        person = client.post("/v1/study/participants", json={"accepted": True}).json()
+        person = enroll_request(client).json()
         auth = {"Authorization": f"Bearer {person['resume_token']}"}
         started = client.post(
             "/v1/study/sessions/1/calls",
@@ -169,7 +170,7 @@ def test_normal_study_end_unlocks_second_only_after_durable_evidence(
             attempt = db.get(StudyAttempt, call_id)
             attempt.media_ms = MIN_MEDIA_MS
             db.commit()
-        other = client.post("/v1/study/participants", json={"accepted": True}).json()
+        other = enroll_request(client).json()
         other_auth = {"Authorization": f"Bearer {other['resume_token']}"}
         assert (
             client.get(f"/v1/study/calls/{call_id}/transcript", headers=other_auth).status_code
@@ -214,7 +215,7 @@ def test_expired_pending_evidence_is_available_for_a_fresh_attempt():
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     with TestClient(create_app(engine)) as client:
-        person = client.post("/v1/study/participants", json={"accepted": True}).json()
+        person = enroll_request(client).json()
         auth = {"Authorization": f"Bearer {person['resume_token']}"}
         with Session(engine) as db:
             session_id = db.scalar(select(StudySession.id).where(StudySession.ordinal == 1))

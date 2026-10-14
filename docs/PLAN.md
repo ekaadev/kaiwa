@@ -20,7 +20,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Aplikasi menampilkan penjelasan dan teks persetujuan sebelum mengirim pendaftaran. Menolak tidak mendaftar atau memulai rekaman; menyetujui meminta izin mikrofon, lalu mendaftar jika izin diberikan. Pendaftaran tidak otomatis memulai panggilan.
 - [ ] Teks dan versi persetujuan disahkan sebelum digunakan peserta nyata; teks di aplikasi saat ini masih draf pengembangan.
 - [x] Aplikasi menahan ketukan daftar berulang selama proses berjalan. Jika penyimpanan token gagal setelah respons diterima, percobaan ulang menyimpan peserta yang sama selama state aplikasi masih tersedia.
-- [ ] Pengiriman ulang permintaan pendaftaran ke backend tidak membuat dua peserta, termasuk saat respons jaringan hilang. Endpoint pendaftaran belum memiliki mekanisme idempotensi.
+- [ ] Pengiriman ulang permintaan pendaftaran ke backend tidak membuat dua peserta, termasuk saat respons jaringan hilang. Backend sudah mewajibkan `Idempotency-Key` dan mengembalikan peserta/token yang sama untuk kunci yang sama (diuji dengan SQLite; jalur Postgres belum diuji); aplikasi mobile belum mengirim kunci, sehingga item ini belum selesai.
 
 **Status:** alur pendaftaran backend dan mobile sudah diimplementasikan; Fitur 2 belum selesai karena pengesahan persetujuan dan jaminan pendaftaran tanpa duplikasi masih belum terpenuhi.
 

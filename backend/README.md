@@ -27,7 +27,7 @@ uv run --env-file .env uvicorn app.main:app --reload
 ```
 
 uvicorn tidak membaca `.env` sendiri; muat dengan `--env-file`. Startup API **tidak** membuat
-tabel; skema dikelola Alembic (revisi saat ini `0003_study_evidence`). Database lama yang
+tabel; skema dikelola Alembic (revisi saat ini `0004_enrollment_idempotency`). Database lama yang
 dibuat sebelum migrasi harus dibackup dan diverifikasi sesuai `0001_study_foundation`
 sebelum `alembic stamp`; jangan men-stamp database yang belum diverifikasi.
 
@@ -69,7 +69,7 @@ log DEBUG transkripsi/TTS untuk peserta nyata.
 | `GET /v1/practice/readiness` | Preflight: LiveKit, model, Qwen, kapasitas (200 atau 503) |
 | `POST /v1/practice/calls` | Panggilan latihan anonim; metode selalu adaptive; tanpa record studi |
 | `GET /v1/practice/calls/{id}/transcript`, `POST .../end` | Transkrip dan pengakhiran dengan `transcript_token` |
-| `POST /v1/study/participants` | Daftar (`{"accepted":true}`); mengembalikan ID dan resume token **sekali** |
+| `POST /v1/study/participants` | Daftar (`{"accepted":true}`) dengan header `Idempotency-Key` wajib (32–128 karakter acak, dibuat klien per percobaan). Kunci yang sama mengembalikan peserta dan token yang sama; tanpa kunci: 400. Klien menyimpan token **segera** dan menjaga kunci rahasia selama percobaan. |
 | `GET /v1/study/me` | Progres peserta (Bearer resume token) |
 | `POST /v1/study/sessions/{ordinal}/calls` | Mulai/retry panggilan studi; wajib `Idempotency-Key`; metode ditetapkan server |
 | `POST /v1/study/calls/{id}/end` | Akhiri panggilan |

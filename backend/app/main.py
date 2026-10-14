@@ -27,7 +27,7 @@ from app.models import (
     StudySession,
 )
 from app.practice import PracticeCallStarter, PracticeIssue, PracticeUnavailable
-from app.study import enroll, find_by_token
+from app.study import enroll, find_by_token, valid_enrollment_key
 from app.study_calls import (
     STALE_AFTER,
     StudyCallConflict,
@@ -191,7 +191,7 @@ def create_app(
                 revision = connection.execute(
                     text("SELECT version_num FROM alembic_version")
                 ).scalar()
-                if revision != "0003_study_evidence":
+                if revision != "0004_enrollment_idempotency":
                     raise RuntimeError("Run database migrations before starting the API")
         else:
             # Injected engines are isolated test fixtures; deployments use migrations above.
@@ -290,10 +290,16 @@ def create_app(
     @app.post("/v1/study/participants", response_model=EnrollmentView, status_code=201)
     def create_participant(
         _: ConsentRequest,
+        request: Request,
         db: Annotated[Session, Depends(get_db)],
     ) -> EnrollmentView:
+        key = request.headers.get("Idempotency-Key", "")
+        if not valid_enrollment_key(key):
+            raise HTTPException(
+                status_code=400, detail="A valid Idempotency-Key (32-128 characters) is required"
+            )
         consent_version = os.getenv("STUDY_CONSENT_VERSION", "draft-v1")
-        enrollment = enroll(db, consent_version)
+        enrollment = enroll(db, consent_version, key)
         return EnrollmentView(
             **public_view(enrollment.participant).model_dump(),
             resume_token=enrollment.resume_token,

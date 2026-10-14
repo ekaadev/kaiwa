@@ -84,7 +84,7 @@ Dari `backend/`, memakai koneksi langsung Neon:
 uv run --no-sync --env-file /root/.config/ai-conversation/runtime.env alembic upgrade head
 ```
 
-API tidak membuat tabel saat startup; revisi yang diharapkan adalah `0003_study_evidence`.
+API tidak membuat tabel saat startup; revisi yang diharapkan adalah `0004_enrollment_idempotency`. Jalankan `alembic upgrade head` (dengan `DATABASE_URL_UNPOOLED`) sebelum menyalakan API versi baru; migrasi hanya menambah kolom `participants.enrollment_key_hash`.
 
 ## 5. Jalankan Qwen dan FastAPI
 

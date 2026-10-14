@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from enrollment import enroll_request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -60,7 +61,7 @@ def test_study_api_opens_assigned_room_and_end_keeps_session_pending(monkeypatch
     gateway = FakeGateway()
     starter = LiveKitStudyStarter(gateway, ReadyTutor(), sessionmaker(engine))
     with TestClient(create_app(engine, study_starter=starter)) as client:
-        enrolled = client.post("/v1/study/participants", json={"accepted": True}).json()
+        enrolled = enroll_request(client).json()
         auth = {"Authorization": f"Bearer {enrolled['resume_token']}"}
         with Session(engine) as db:
             method = db.scalar(select(StudySession.method).where(StudySession.ordinal == 1))
@@ -78,7 +79,7 @@ def test_study_api_opens_assigned_room_and_end_keeps_session_pending(monkeypatch
         assert started.json()["join_token"] == "room-scoped-client-token"
         assert "method" not in started.text
         assert client.post(f"/v1/study/calls/{call_id}/end").status_code == 401
-        other = client.post("/v1/study/participants", json={"accepted": True}).json()
+        other = enroll_request(client).json()
         other_auth = {"Authorization": f"Bearer {other['resume_token']}"}
         assert client.post(f"/v1/study/calls/{call_id}/end", headers=other_auth).status_code == 404
         assert client.post(f"/v1/study/calls/{call_id}/end", headers=auth).status_code == 204
@@ -156,7 +157,7 @@ def test_incoming_audio_counts_frames_but_not_join_or_connection_gap(monkeypatch
         poolclass=StaticPool,
     )
     with TestClient(create_app(engine)) as client:
-        client.post("/v1/study/participants", json={"accepted": True})
+        enroll_request(client)
         with Session(engine) as db:
             session = db.scalar(select(StudySession).where(StudySession.ordinal == 1))
             assert session is not None
@@ -217,7 +218,7 @@ def test_study_setup_failure_cleans_room_and_does_not_return_credentials(monkeyp
     gateway = FakeGateway()
     starter = LiveKitStudyStarter(gateway, ReadyTutor(), sessionmaker(engine))
     with TestClient(create_app(engine, study_starter=starter)) as client:
-        enrolled = client.post("/v1/study/participants", json={"accepted": True}).json()
+        enrolled = enroll_request(client).json()
         response = client.post(
             "/v1/study/sessions/1/calls",
             json={},
@@ -267,7 +268,7 @@ def test_received_audio_can_await_evidence_but_cannot_complete_session(monkeypat
         poolclass=StaticPool,
     )
     with TestClient(create_app(engine)) as client:
-        client.post("/v1/study/participants", json={"accepted": True})
+        enroll_request(client)
         with Session(engine) as db:
             session = db.scalar(select(StudySession).where(StudySession.ordinal == 1))
             assert session is not None

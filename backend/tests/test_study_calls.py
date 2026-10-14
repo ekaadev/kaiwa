@@ -2,6 +2,7 @@ from datetime import timedelta
 from uuid import UUID
 
 import pytest
+from enrollment import enroll_request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -34,7 +35,7 @@ def study():
     )
     starter = FakeStudyStarter()
     with TestClient(create_app(engine, study_starter=starter)) as client:
-        enrollment = client.post("/v1/study/participants", json={"accepted": True}).json()
+        enrollment = enroll_request(client).json()
         auth = {"Authorization": f"Bearer {enrollment['resume_token']}"}
         yield client, engine, starter, auth
     engine.dispose()
@@ -164,7 +165,7 @@ def test_unconfigured_study_calls_fail_closed_without_attempts():
         poolclass=StaticPool,
     )
     with TestClient(create_app(engine)) as client:
-        enrollment = client.post("/v1/study/participants", json={"accepted": True}).json()
+        enrollment = enroll_request(client).json()
         auth = {"Authorization": f"Bearer {enrollment['resume_token']}"}
         assert start(client, auth).status_code == 503
         with Session(engine) as db:
