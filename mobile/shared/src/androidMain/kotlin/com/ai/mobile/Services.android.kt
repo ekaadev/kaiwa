@@ -98,8 +98,14 @@ private class AndroidCalls(private val context: Context, private val scope: Coro
                     is RoomEvent.Reconnecting -> listener("Reconnecting")
                     is RoomEvent.Reconnected -> listener("Connected")
                     is RoomEvent.ActiveSpeakersChanged -> listener(if (event.speakers.any { it is RemoteParticipant }) "Speaking" else "Listening")
-                    is RoomEvent.TrackSubscribed -> if (event.track.kind == Track.Kind.AUDIO) listener("remote_audio_subscribed")
-                    is RoomEvent.TrackUnsubscribed -> if (event.track.kind == Track.Kind.AUDIO) listener("remote_audio_unsubscribed")
+                    is RoomEvent.TrackSubscribed -> if (event.track.kind == Track.Kind.AUDIO) {
+                        listener("remote_audio_subscribed")
+                        (event.track as? io.livekit.android.room.track.RemoteAudioTrack)?.let(::watchPlayback)
+                    }
+                    is RoomEvent.TrackUnsubscribed -> if (event.track.kind == Track.Kind.AUDIO) {
+                        stopWatchingPlayback()
+                        listener("remote_audio_unsubscribed")
+                    }
                     else -> Unit
                 }
             }
@@ -112,7 +118,39 @@ private class AndroidCalls(private val context: Context, private val scope: Coro
         room?.localParticipant?.setMicrophoneEnabled(!muted) ?: error("No active call")
     }
 
+    private var playbackTrack: io.livekit.android.room.track.RemoteAudioTrack? = null
+    private var playbackSink: livekit.org.webrtc.AudioTrackSink? = null
+
+    private fun watchPlayback(track: io.livekit.android.room.track.RemoteAudioTrack) {
+        stopWatchingPlayback()
+        val detector = PlaybackOnsetDetector()
+        val sink = livekit.org.webrtc.AudioTrackSink { data, bits, _, _, frames, _ ->
+            if (bits != 16 || frames <= 0) return@AudioTrackSink
+            val samples = data.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+            var sum = 0.0
+            val count = minOf(samples.remaining(), frames)
+            for (i in 0 until count) {
+                val v = samples.get().toDouble() / Short.MAX_VALUE
+                sum += v * v
+            }
+            val rms = if (count > 0) kotlin.math.sqrt(sum / count) else 0.0
+            val now = android.os.SystemClock.elapsedRealtime()
+            detector.accept(now, rms)?.let { event -> scope.launch { listener(event) } }
+        }
+        track.addSink(sink)
+        playbackTrack = track
+        playbackSink = sink
+    }
+
+    private fun stopWatchingPlayback() {
+        val track = playbackTrack
+        val sink = playbackSink
+        if (track != null && sink != null) runCatching { track.removeSink(sink) }
+        playbackTrack = null; playbackSink = null
+    }
+
     override fun disconnect() {
+        stopWatchingPlayback()
         events?.cancel(); events = null; room?.disconnect(); room?.release(); room = null
     }
 
