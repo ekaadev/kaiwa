@@ -101,6 +101,7 @@ def test_analysis_runs_on_an_export_folder_without_credentials(tmp_path):
     assert skipped == []
     assert [r["attempt_id"] for r in rows] == [row["attempt_id"]]
     assert rows[0]["method"] == "fixed"
+    assert rows[0]["participant_id"] == "p1" and rows[0]["session_ordinal"] == "1"
     analyze.write_outputs(rows, tmp_path / "analysis")
     names = {p.name for p in (tmp_path / "analysis").iterdir()}
     assert names == {"turns.csv", "summary.csv", "annotation_sample.csv"}

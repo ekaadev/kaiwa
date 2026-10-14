@@ -170,3 +170,25 @@ def test_analysis_drops_duplicate_eot_and_uses_bot_speaking_for_overlap():
     later[4] = vad(7, "start")  # resumes after the tutor finished
     [row] = analyze.analyze_events(later)
     assert row["overlaps_tutor_audio"] is False
+
+
+def test_analysis_assigns_ttfb_per_stage_to_the_right_turn():
+    s = 1_000_000_000
+    STT, LLM, TTS = "LocalWhisperSTTService", "OpenAILLMService", "JapaneseKokoroTTSService"
+    events = [
+        {"type": "vad", "offset_ns": 1 * s, "state": "stop"},
+        {"type": "ttfb", "offset_ns": int(1.2 * s), "processor": STT, "ms": 200},
+        {"type": "eot", "offset_ns": int(1.3 * s), "method": "fixed", "source": "silence"},
+        {"type": "ttfb", "offset_ns": int(1.4 * s), "processor": LLM, "ms": 40},
+        {"type": "ttfb", "offset_ns": int(2.4 * s), "processor": TTS, "ms": 1000},
+        {"type": "audio", "offset_ns": int(2.5 * s), "role": "assistant"},
+        {"type": "vad", "offset_ns": 5 * s, "state": "stop"},
+        {"type": "ttfb", "offset_ns": int(5.3 * s), "processor": STT, "ms": 300},
+        {"type": "eot", "offset_ns": int(5.4 * s), "method": "fixed", "source": "silence"},
+        {"type": "ttfb", "offset_ns": int(7.8 * s), "processor": LLM, "ms": 2400},
+    ]
+    first, second = analyze.analyze_events(events)
+    assert (first["stt_ttfb_s"], first["llm_ttfb_s"], first["tts_ttfb_s"]) == (0.2, 0.04, 1.0)
+    assert (second["stt_ttfb_s"], second["llm_ttfb_s"], second["tts_ttfb_s"]) == (0.3, 2.4, None)
+    summary = analyze.summarize([first, second])[0]
+    assert summary["median_stt_ttfb_s"] == 0.25 and summary["median_tts_ttfb_s"] == 1.0

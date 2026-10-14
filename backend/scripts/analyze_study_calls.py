@@ -29,6 +29,37 @@ def load_events(text: str) -> list[dict]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
+STAGES = ("stt", "llm", "tts")
+
+
+def _stage(processor: str | None) -> str | None:
+    """Map a Pipecat processor name (e.g. LocalWhisperSTTService) to stt/llm/tts."""
+    name = (processor or "").upper()
+    return next((stage for stage in STAGES if stage.upper() in name), None)
+
+
+def _ttfb_by_stage(ttfbs: list[dict], previous_eot: int | None, eot: int, next_eot: int | None):
+    """Seconds of TTFB per stage for the turn closed at eot.
+
+    STT usually reports before the EOT (the decision waits for the transcript) and LLM/TTS after
+    it, so each turn owns the window between the previous and the next EOT.
+    """
+    lower = previous_eot if previous_eot is not None else -1
+    upper = next_eot if next_eot is not None else float("inf")
+    window = [e for e in ttfbs if lower < e["offset_ns"] < upper and _stage(e.get("processor"))]
+    out = {}
+    for stage in STAGES:
+        mine = [e for e in window if _stage(e.get("processor")) == stage]
+        before = [e for e in mine if e["offset_ns"] <= eot]
+        after = [e for e in mine if e["offset_ns"] > eot]
+        if stage == "stt":
+            chosen = before[-1] if before else (after[0] if after else None)
+        else:
+            chosen = after[0] if after else None
+        out[f"{stage}_ttfb_s"] = None if chosen is None else chosen["ms"] / 1000
+    return out
+
+
 def analyze_events(events: list[dict]) -> list[dict]:
     """Return one row per EOT decision. All offsets are server-clock seconds."""
     events = sorted(events, key=lambda e: e.get("offset_ns", 0))
@@ -44,6 +75,8 @@ def analyze_events(events: list[dict]) -> list[dict]:
     ]
     clock = next((e for e in events if e.get("type") == "call_clock"), None)
     bot_events = [e for e in events if e.get("type") == "bot_speaking"]
+    ttfbs = [e for e in events if e.get("type") == "ttfb"]
+    eot_offsets = [e["offset_ns"] for e in events if e.get("type") == "eot"]
     rows = []
     vad_stop = None
     vad_stop_seen = True  # the first EOT always counts, even without a VAD stop (STT fallback)
@@ -58,6 +91,13 @@ def analyze_events(events: list[dict]) -> list[dict]:
             continue
         vad_stop_seen = False
         eot = e["offset_ns"]
+        position = eot_offsets.index(eot) if eot in eot_offsets else None
+        previous_eot = eot_offsets[position - 1] if position else None
+        next_eot = (
+            eot_offsets[position + 1]
+            if position is not None and position + 1 < len(eot_offsets)
+            else None
+        )
         bot = next((t for t in first_assistant_audio if t >= eot), None)
         resumed_after = next((t for t in vad_starts if t > eot), None)
         row = {
@@ -71,6 +111,7 @@ def analyze_events(events: list[dict]) -> list[dict]:
             "latency_vad_to_server_audio_s": (
                 None if bot is None or vad_stop is None else (bot - vad_stop) / NS
             ),
+            **_ttfb_by_stage(ttfbs, previous_eot, eot, next_eot),
             "phone_playback_s": None,
             "latency_vad_to_phone_s": None,
         }
@@ -136,6 +177,9 @@ def summarize(rows: list[dict]) -> list[dict]:
             "median_latency_s": statistics.median(lat) if lat else None,
             "p90_latency_s": lat[min(len(lat) - 1, int(len(lat) * 0.9))] if lat else None,
         }
+        for stage in STAGES:
+            values = [r[f"{stage}_ttfb_s"] for r in mine if r.get(f"{stage}_ttfb_s") is not None]
+            summary[f"median_{stage}_ttfb_s"] = statistics.median(values) if values else None
         for window in WINDOWS:
             key = f"user_resumed_within_{int(window)}s"
             summary[f"false_cutoff_lower_bound_T{int(window)}s"] = (
@@ -161,7 +205,7 @@ def rows_from_server() -> list[dict]:
     from sqlalchemy.orm import Session
 
     from app.evidence import EvidenceStore
-    from app.models import StudyAttempt, StudyEvidence
+    from app.models import StudyAttempt, StudyEvidence, StudySession
 
     store = EvidenceStore.from_env()
     if store is None:
@@ -169,22 +213,35 @@ def rows_from_server() -> list[dict]:
     engine = create_engine(os.environ["DATABASE_URL_UNPOOLED"])
     rows = []
     with Session(engine) as db:
-        for attempt, evidence in db.execute(
-            select(StudyAttempt, StudyEvidence).join(
-                StudyEvidence, StudyEvidence.attempt_id == StudyAttempt.id
-            )
-        ):
+        query = (
+            select(StudyAttempt, StudyEvidence, StudySession)
+            .join(StudyEvidence, StudyEvidence.attempt_id == StudyAttempt.id)
+            .join(StudySession, StudySession.id == StudyAttempt.session_id)
+        )
+        for attempt, evidence, session in db.execute(query):
             result = store.events(attempt.id, evidence.manifest_sha256)
             if result is None:
                 continue
             for row in analyze_events(load_events(result)):
-                rows.append({"attempt_id": str(attempt.id), **row})
+                rows.append(
+                    {
+                        "attempt_id": str(attempt.id),
+                        "participant_id": str(session.participant_id),
+                        "session_ordinal": session.ordinal,
+                        **row,
+                    }
+                )
     return rows
 
 
 def rows_from_export(export_dir: Path) -> tuple[list[dict], list[str]]:
     """Analyze an export folder; attempts whose events fail the manifest check are skipped."""
     rows, skipped = [], []
+    index = {}
+    index_path = export_dir / "index.csv"
+    if index_path.is_file():
+        with index_path.open(newline="") as handle:
+            index = {r["attempt_id"]: r for r in csv.DictReader(handle)}
     for folder in sorted(p for p in export_dir.iterdir() if p.is_dir()):
         try:
             manifest = json.loads((folder / "manifest.json").read_text())
@@ -196,7 +253,15 @@ def rows_from_export(export_dir: Path) -> tuple[list[dict], list[str]]:
             skipped.append(folder.name)
             continue
         for row in analyze_events(events):
-            rows.append({"attempt_id": folder.name, **row})
+            meta = index.get(folder.name, {})
+            rows.append(
+                {
+                    "attempt_id": folder.name,
+                    "participant_id": meta.get("participant_id"),
+                    "session_ordinal": meta.get("session_ordinal"),
+                    **row,
+                }
+            )
     return rows, skipped
 
 
@@ -213,6 +278,8 @@ def write_outputs(rows: list[dict], out_dir: Path) -> None:
                 {
                     "attempt_id": r["attempt_id"],
                     "turn_index": r["turn_index"],
+                    "participant_id": r.get("participant_id"),
+                    "session_ordinal": r.get("session_ordinal"),
                     "method": method,
                     "user_audio_offset_s": r["vad_stop_s"],
                     "annotation": "",  # complete | incomplete (manual)
