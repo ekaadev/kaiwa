@@ -52,7 +52,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Prompt tutor mengarahkan jawaban dalam bahasa Jepang, 1–3 kalimat dan maksimal satu pertanyaan, serta menerima ujaran pengguna dalam bahasa Inggris/Jepang.
 - [x] Alur suara latihan dengan inferensi nyata berhasil: ujaran dari Android diproses oleh Whisper, Qwen menghasilkan jawaban, dan suara Kokoro dikirim melalui LiveKit serta terdengar di ponsel.
 - [ ] Verifikasi akurasi transkripsi ujaran Inggris/Jepang, perilaku fixed/adaptive, serta kepatuhan jawaban terhadap batas bahasa, kalimat, dan pertanyaan pada panggilan nyata.
-- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android. Pengukuran awal pada GPU RTX 4090 (uji sintetis, bukan percakapan nyata): Whisper dan Kokoro masing-masing di bawah 0,2 detik per inferensi setelah warm-up; jeda dari ujaran selesai sampai audio tutor pertama sekitar 1,4–5,6 detik, dengan jeda terlama disebabkan Smart Turn menilai ujaran belum selesai lalu menunggu batas hening 3 detik; audio tutor pertama pada smoke test LiveKit 8,0 detik setelah panggilan dimulai.
+- [ ] Ukur latensi setiap tahap dan kurangi jeda dari pengguna selesai berbicara sampai jawaban tutor terdengar; jeda masih terasa lama pada uji coba Android. Pengukuran awal pada GPU RTX 4090 (uji sintetis, bukan percakapan nyata): Whisper dan Kokoro masing-masing di bawah 0,2 detik per inferensi setelah warm-up; jeda dari ujaran selesai sampai audio tutor pertama sekitar 1,4–5,6 detik, dengan jeda terlama disebabkan Smart Turn menilai ujaran belum selesai lalu menunggu batas hening 3 detik; audio tutor pertama pada smoke test LiveKit 8,0 detik setelah panggilan dimulai. Pada dua percakapan nyata adaptive di Android (pod baru menyala), ujaran selesai sampai audio tutor pertama di server 1,5 dan 4,1 detik, dengan tahap setelah keputusan EOT (STT, LLM, TTS) terlama 3,9 detik; belum ada data fixed.
 
 **Status:** alur suara latihan Android sudah berjalan dengan inferensi nyata. Fitur 5 masih memerlukan validasi perilaku akhir giliran, akurasi transkripsi, kepatuhan jawaban, serta pengukuran dan perbaikan latensi.
 
@@ -86,7 +86,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Rekaman, transkrip, waktu, posisi audio, interupsi, dan hasil dihubungkan ke ID percobaan. Berkas audio disimpan terpisah dari database; database menyimpan referensi bukti dan checksum manifest.
 - [x] Finalisasi bukti memeriksa keberadaan kedua jalur audio dan menyimpan manifest beserta checksum. Kegagalan perekaman atau penyimpanan bukti tidak menyelesaikan sesi pengujian.
 - [x] Mobile mengirim catatan langganan/pelepasan audio tutor beserta urutan dan waktu kejadian; backend memeriksa kepemilikan panggilan dan menahan kejadian duplikat.
-- [ ] Aplikasi melaporkan kapan suara tutor benar-benar mulai terdengar di ponsel. Catatan langganan audio saat ini belum membuktikan waktu pemutaran yang terdengar.
+- [ ] Aplikasi melaporkan kapan suara tutor benar-benar mulai terdengar di ponsel. Aplikasi sudah melaporkan mulai/berhenti audio tutor terdekode (Fitur 10), tetapi belum divalidasi sesuai suara yang keluar dari speaker.
 - [ ] Verifikasi rekaman panggilan nyata, termasuk suara pengguna yang terus berbicara setelah backend terlalu cepat mengambil giliran, interupsi, dan kesesuaian rekaman dengan catatan waktu.
 
 **Status:** Fitur 8 sebagian selesai. Penyimpanan dan pengaitan bukti tersedia; waktu pemutaran tutor di ponsel dan kelengkapan rekaman pada panggilan nyata masih perlu ditangani dan diverifikasi.
@@ -113,5 +113,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Dashboard operator langsung (`/monitor`, dilindungi `MONITOR_TOKEN`) tanpa teks transkrip atau audio.
 - [ ] Verifikasi pada panggilan nyata dua metode (panggilan ≥120 detik dengan banyak giliran): kecocokan event dan waktu dengan rekaman, serta ketepatan sumber `timeout`. Dua panggilan pendek adaptive pada pod GPU sudah mencatat event dan menghasilkan `turns.csv`; fixed belum dicoba.
 - [ ] Ambang dan kalibrasi deteksi mulai putar di ponsel divalidasi pada perangkat nyata.
+
+**Status:** pencatatan, dashboard, dan skrip analisis sudah diimplementasikan, dideploy, dan dicoba pada dua panggilan adaptive pendek. Fitur 10 belum selesai sampai diverifikasi pada panggilan ≥120 detik untuk kedua metode.
 
 **Batas rencana:** sistem menyediakan panggilan dan data yang dibutuhkan. Rekrutmen peserta, anotasi rekaman, perhitungan statistik, dan UAT penelitian bukan fitur sistem. Sebelum dipakai peserta nyata, teks persetujuan dan kebijakan privasi harus disahkan.
