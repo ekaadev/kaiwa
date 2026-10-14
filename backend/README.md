@@ -96,6 +96,13 @@ Audio terima server dan keluaran TTS server bukan bukti apa yang terdengar di po
 Evidence tidak punya endpoint unduh publik; cleanup retensi menghapus objek evidence tetapi
 tidak metadata database.
 
+## Monitoring pengujian
+
+Hanya jalur study (latihan tidak mencatat data penelitian). Panggilan study menambahkan event ke `events.jsonl`: `call_clock`, `vad`, `eot` (metode, sumber `silence`/`smart_turn`/`timeout`, probabilitas), `stt_final` (panjang teks), `ttfb` (STT/LLM/TTS), dan `bot_speaking`. Sumber `timeout` pada adaptive disimpulkan dari prediksi Smart Turn "belum selesai". Aplikasi Android melaporkan `remote_audio_playback_started/stopped` (audio terdekode di ponsel; bukan bukti terdengar di speaker).
+
+- **Dashboard operator:** set `MONITOR_TOKEN` (kosong = dinonaktifkan), buka `/monitor` lewat HTTPS atau tunnel SSH. JSON di `GET /v1/monitor/calls` (bearer). Tidak memuat teks transkrip atau audio.
+- **Analisis:** `uv run --env-file .env python scripts/analyze_study_calls.py [OUT_DIR]` menulis `turns.csv`, `summary.csv`, dan `annotation_sample.csv` ke direktori privat (`.study-analysis/`). Angka false cut-off otomatis hanya **batas bawah** (pengguna melanjutkan bicara dalam T = 1/2/3 s setelah EOT); tingkat sebenarnya memerlukan anotasi manual sampel.
+
 ## Skrip
 
 | Skrip | Fungsi |

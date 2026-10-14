@@ -103,4 +103,15 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 
 **Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; panggilan latihan Android sudah berhasil pada deployment Runpod. Akses petugas, kebijakan penyimpanan/penghapusan, serta pengujian menyeluruh dua sesi pengujian masih belum selesai.
 
+## Prioritas 4 — Monitoring pengujian
+
+### Fitur 10 — Pantau dan ukur panggilan pengujian
+
+- [x] Backend mencatat event VAD, keputusan akhir giliran (metode, sumber, probabilitas), TTFB STT/LLM/TTS, dan mulai/akhir bicara tutor ke bukti panggilan study. Latihan tidak mencatatnya.
+- [x] Aplikasi Android melaporkan mulai/berhenti audio tutor terdekode di ponsel; backend menambahkan waktu terima server untuk estimasi selisih jam.
+- [x] Skrip analisis menghasilkan latensi per giliran, batas bawah false cut-off (T = 1/2/3 s), dan sampel anotasi manual.
+- [x] Dashboard operator langsung (`/monitor`, dilindungi `MONITOR_TOKEN`) tanpa teks transkrip atau audio.
+- [ ] Verifikasi pada panggilan nyata dua metode: kecocokan event dan waktu dengan rekaman, serta ketepatan sumber `timeout`.
+- [ ] Ambang dan kalibrasi deteksi mulai putar di ponsel divalidasi pada perangkat nyata.
+
 **Batas rencana:** sistem menyediakan panggilan dan data yang dibutuhkan. Rekrutmen peserta, anotasi rekaman, perhitungan statistik, dan UAT penelitian bukan fitur sistem. Sebelum dipakai peserta nyata, teks persetujuan dan kebijakan privasi harus disahkan.
