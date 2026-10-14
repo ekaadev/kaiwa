@@ -94,14 +94,14 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 ### Fitur 9 — Akses data dan kesiapan sistem (FR-19)
 
 - [x] Backend mensyaratkan direktori bukti privat dan tidak menyediakan unduhan rekaman publik. Akses transkrip peserta memerlukan token dan pemeriksaan kepemilikan panggilan.
-- [ ] Akses pengambilan rekaman dan catatan oleh petugas berwenang ditetapkan dan diverifikasi. Ekspor lewat CLI di server sudah ada (`scripts/export_study_evidence.py`: verifikasi checksum, folder privat, log akses, tanpa menimpa); belum ditentukan siapa petugas berwenangnya dan belum dicoba pada bucket Neon di server. API HTTP untuk petugas tidak dibuat.
+- [ ] Akses pengambilan rekaman dan catatan oleh petugas berwenang ditetapkan dan diverifikasi. Ekspor lewat CLI di server sudah ada (`scripts/export_study_evidence.py`: verifikasi checksum, folder privat, log akses, tanpa menimpa); petugas berwenang ditetapkan hanya peneliti utama ([docs/akses-data.md](akses-data.md)); belum dicoba pada bucket Neon di server. API HTTP untuk petugas tidak dibuat.
 - [x] Backend mensyaratkan konfigurasi masa retensi dan menyediakan penghapusan berkas bukti yang kedaluwarsa, termasuk rekaman yang belum selesai.
 - [ ] Kebijakan penyimpanan, masa retensi, dan penghapusan data disahkan serta diterapkan pada penyimpanan deployment. Penghapusan berkas otomatis belum mencakup penghapusan metadata peserta/percobaan di database.
 - [x] Struktur database diperbarui melalui migrasi Alembic. Server memeriksa revisi yang diperlukan saat menyala dan tidak membuat tabel deployment secara otomatis.
 - [x] Tes backend dan host mobile tersedia untuk aturan sesi, retry/idempotensi panggilan, izin mikrofon, pemulihan peserta, transkrip, serta penyimpanan bukti.
 - [ ] Alur Android diuji menyeluruh dengan layanan dan audio nyata: izin mikrofon, dua kondisi, panggilan gagal, retry, sesi terkunci, interupsi, dan pemisahan latihan dari pengujian. Menjalankan aplikasi native iOS ditunda.
 
-**Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; panggilan latihan Android sudah berhasil pada deployment Runpod. Penetapan petugas berwenang dan uji ekspor di server, kebijakan penyimpanan/penghapusan, serta pengujian menyeluruh dua sesi pengujian masih belum selesai.
+**Status:** Fitur 9 sebagian selesai. Pembatasan dasar akses, mekanisme retensi berkas, migrasi, dan tes komponen tersedia; panggilan latihan Android sudah berhasil pada deployment Runpod. Uji ekspor di server, kebijakan penyimpanan/penghapusan, serta pengujian menyeluruh dua sesi pengujian masih belum selesai.
 
 ## Prioritas 4 — Monitoring pengujian
 
