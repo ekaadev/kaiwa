@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.call_capacity import CallCapacity
+from app.call_metrics import StudyMetricsObserver
 from app.evidence import EvidenceStore
 from app.livekit_practice import (
     BOT_JOIN_TIMEOUT_SECONDS,
@@ -19,6 +20,7 @@ from app.livekit_practice import (
     run_transport_bot,
 )
 from app.models import StudyAttempt, StudyEvidence
+from app.monitor import CallMonitor
 from app.practice import PracticeConnection
 from app.study_calls import connected, disconnected, finish, now
 from app.transcripts import TranscriptRegistry
@@ -143,6 +145,7 @@ class LiveKitStudyStarter:
         self.capacity = capacity
         self.evidence_store = evidence_store
         self.transcripts = TranscriptRegistry()
+        self.monitor = CallMonitor()
         self._active: dict[UUID, ActiveStudyCall] = {}
         self._lock = asyncio.Lock()
 
@@ -234,7 +237,20 @@ class LiveKitStudyStarter:
     ) -> None:
         tracker = MediaTracker(attempt_id, self.sessions)
         watcher = asyncio.create_task(tracker.watch())
+        state = self.monitor.start(attempt_id, method)
+        log = self.transcripts.get(attempt_id)
+        observers = []
+        if log is not None and log.evidence is not None:
+            metrics = StudyMetricsObserver(log.evidence, method, state)
+            observers.append(metrics)
+
+        async def on_frame(frame):
+            await tracker.frame(frame)
+            state.media_ms = tracker.received_ms
+
         try:
+            if observers:
+                await observers[0].start()
             await run_transport_bot(
                 self.gateway.url,
                 token,
@@ -242,15 +258,18 @@ class LiveKitStudyStarter:
                 joined,
                 tutor=self.tutor,
                 eot_method=method,
-                on_audio_frame=tracker.frame,
+                on_audio_frame=on_frame,
                 on_audio_lost=tracker.close,
-                transcript=self.transcripts.get(attempt_id),
+                transcript=log,
+                observers=observers,
+                enable_metrics=True,
             )
         except asyncio.CancelledError:
             pass
         except Exception:
             logger.warning("Study transport stopped unexpectedly")
         finally:
+            self.monitor.stop(attempt_id)
             watcher.cancel()
             await asyncio.gather(watcher, return_exceptions=True)
             try:

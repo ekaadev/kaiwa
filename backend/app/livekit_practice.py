@@ -88,6 +88,8 @@ async def run_transport_bot(
     on_audio_frame: Callable[[Any], Awaitable[None]] | None = None,
     on_audio_lost: Callable[[], Awaitable[None]] | None = None,
     transcript=None,
+    observers: list | None = None,
+    enable_metrics: bool = False,
 ) -> None:
     """Join and hold the room with a prepared tutor pipeline."""
     from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame, UserAudioRawFrame
@@ -160,7 +162,8 @@ async def run_transport_bot(
     )
     task = PipelineTask(
         pipeline,
-        params=PipelineParams(audio_in_sample_rate=16000),
+        params=PipelineParams(audio_in_sample_rate=16000, enable_metrics=enable_metrics),
+        observers=observers,
         enable_rtvi=False,
         idle_timeout_secs=None,
     )

@@ -113,6 +113,16 @@ class S3EvidenceStore(EvidenceStore):
             raise RuntimeError("Stored evidence is missing events")
         return self.decode_transcript(manifest, contents, expected_manifest_sha256)
 
+    def events(self, call_id, expected_manifest_sha256=None):
+        prefix = self.prefix(call_id)
+        manifest = self.read(prefix + "manifest.json")
+        if manifest is None:
+            return None
+        contents = self.read(prefix + "events.jsonl")
+        if contents is None:
+            raise RuntimeError("Stored evidence is missing events")
+        return self.verified_events(manifest, contents, expected_manifest_sha256)
+
     def cleanup(self):
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         groups = defaultdict(list)

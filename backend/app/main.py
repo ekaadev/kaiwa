@@ -1,8 +1,10 @@
 """Control-plane API. WebRTC media will join LiveKit, not this HTTP server."""
 
 import asyncio
+import hmac
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from uuid import UUID
@@ -37,6 +39,29 @@ from app.study_calls import (
 )
 
 bearer = HTTPBearer(auto_error=False)
+
+MONITOR_HTML = """<!doctype html><html lang="id"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Monitor panggilan</title>
+<style>body{font:14px system-ui;margin:16px}table{border-collapse:collapse;width:100%}
+td,th{border-bottom:1px solid #8884;padding:6px;text-align:left}.bad{color:#c00}</style>
+<h1>Panggilan pengujian aktif</h1><p id=s>Memuat…</p>
+<table><thead><tr><th>Call<th>Metode<th>Durasi (s)<th>Audio (s)<th>Giliran<th>Latensi terakhir (ms)
+<th>Median (ms)<th>EOT<th>Playback ponsel<th>Bukti</tr></thead><tbody id=b></tbody></table>
+<script>
+let t=null;try{t=sessionStorage.getItem("mt")}catch(e){}
+if(!t){t=prompt("Monitor token");try{sessionStorage.setItem("mt",t)}catch(e){}}
+const v=x=>x==null?"-":x;
+async function tick(){try{
+const r=await fetch("/v1/monitor/calls",{headers:{Authorization:"Bearer "+t}});
+if(!r.ok){s.textContent="Akses ditolak ("+r.status+")";return}
+const d=(await r.json()).calls;s.textContent=d.length+" panggilan aktif";
+b.innerHTML=d.map(c=>"<tr><td>"+c.call_id.slice(0,8)+"<td>"+c.method+"<td>"+c.elapsed_s+
+"<td>"+Math.round(c.media_ms/1000)+"<td>"+c.turns+"<td>"+v(c.last_latency_ms)+
+"<td>"+v(c.median_latency_ms)+"<td>"+v(c.last_eot_source)+"<td>"+v(c.last_playback)+
+"<td class="+(c.evidence_failed?"bad":"")+">"+(c.evidence_failed?"GAGAL":"ok")+"</tr>").join("");
+}catch(e){s.textContent="Gagal memuat"}}
+tick();setInterval(tick,2000);
+</script></html>"""
 logger = logging.getLogger(__name__)
 
 PRACTICE_MESSAGES = {
@@ -84,7 +109,12 @@ class StudyStartRequest(BaseModel):
 
 class ClientAudioEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    event: Literal["remote_audio_subscribed", "remote_audio_unsubscribed"]
+    event: Literal[
+        "remote_audio_subscribed",
+        "remote_audio_unsubscribed",
+        "remote_audio_playback_started",
+        "remote_audio_playback_stopped",
+    ]
     client_sequence: int = Field(ge=1, le=2000)
     client_timestamp_ms: int = Field(ge=0, le=2**63 - 1)
 
@@ -398,11 +428,47 @@ def create_app(
             # Client telemetry cannot alter media duration, outcome, or completion.
             log.client_sequences.add(event.client_sequence)
             try:
-                await log.evidence.event({"type": "client_audio", **event.model_dump()})
+                await log.evidence.event(
+                    {
+                        "type": "client_audio",
+                        **event.model_dump(),
+                        "server_received_utc_ns": time.time_ns(),
+                    }
+                )
+                state = getattr(
+                    getattr(request.app.state.study_starter, "monitor", None), "get", None
+                )
+                call_state = state(call_id) if state else None
+                if call_state is not None:
+                    call_state.last_playback = event.event
             except Exception as exc:
                 log.client_sequences.discard(event.client_sequence)
                 raise HTTPException(status_code=503, detail="Evidence storage unavailable") from exc
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+    def require_monitor(credentials) -> None:
+        expected = os.getenv("MONITOR_TOKEN", "").strip()
+        if not expected:
+            raise HTTPException(status_code=404, detail="Not found")
+        if credentials is None or not hmac.compare_digest(credentials.credentials, expected):
+            raise HTTPException(status_code=401, detail="Monitor access denied")
+
+    @app.get("/v1/monitor/calls")
+    async def monitor_calls(
+        request: Request,
+        response: Response,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    ):
+        require_monitor(credentials)
+        monitor = getattr(request.app.state.study_starter, "monitor", None)
+        response.headers["Cache-Control"] = "no-store"
+        return {"calls": monitor.snapshot() if monitor is not None else []}
+
+    @app.get("/monitor", include_in_schema=False)
+    async def monitor_page():
+        if not os.getenv("MONITOR_TOKEN", "").strip():
+            raise HTTPException(status_code=404, detail="Not found")
+        return Response(MONITOR_HTML, media_type="text/html", headers={"Cache-Control": "no-store"})
 
     @app.get("/v1/study/calls/{call_id}/transcript")
     async def study_transcript(

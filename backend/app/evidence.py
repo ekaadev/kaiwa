@@ -65,8 +65,20 @@ class EvidenceStore:
         contents = (directory / "events.jsonl").read_bytes()
         return self.decode_transcript(manifest_bytes, contents, expected_manifest_sha256)
 
+    def events(self, call_id, expected_manifest_sha256=None):
+        """Integrity-checked raw events.jsonl text, or None if the call has no evidence."""
+        directory = self.root / str(call_id)
+        manifest = directory / "manifest.json"
+        if not manifest.is_file():
+            return None
+        return self.verified_events(
+            manifest.read_bytes(),
+            (directory / "events.jsonl").read_bytes(),
+            expected_manifest_sha256,
+        )
+
     @staticmethod
-    def decode_transcript(manifest_bytes, contents, expected_manifest_sha256=None):
+    def verified_events(manifest_bytes, contents, expected_manifest_sha256=None):
         if (
             expected_manifest_sha256 is not None
             and hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
@@ -76,6 +88,11 @@ class EvidenceStore:
         expected = data["files"]["events.jsonl"]["sha256"]
         if hashlib.sha256(contents).hexdigest() != expected:
             raise RuntimeError("Evidence integrity check failed")
+        return contents.decode()
+
+    @staticmethod
+    def decode_transcript(manifest_bytes, contents, expected_manifest_sha256=None):
+        EvidenceStore.verified_events(manifest_bytes, contents, expected_manifest_sha256)
         events = [json.loads(line) for line in contents.splitlines()]
         turns = [
             {key: e[key] for key in ("sequence", "role", "text", "timestamp")}
