@@ -34,7 +34,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 
 ### Fitur 4 — Mulai panggilan (FR-07–09)
 
-- [ ] Sebelum menelepon, aplikasi memberi petunjuk singkat bahwa pengguna boleh memilih topik sendiri, tanpa skenario tetap. Petunjuk sudah tersedia di Testing, tetapi belum di Home untuk latihan. SRD FR-07 masih meminta skenario tertentu dan perlu diselaraskan dengan keputusan ini.
+- [ ] Sebelum menelepon, aplikasi memberi petunjuk singkat bahwa pengguna boleh memilih topik sendiri, tanpa skenario tetap. Petunjuk sudah tersedia di Testing dan di Home untuk latihan. SRD FR-07 masih meminta skenario tertentu dan perlu diselaraskan dengan keputusan ini.
 - [x] Backend dapat memeriksa koneksi database. **Ini belum berarti layanan panggilan siap.**
 - [x] Aplikasi memeriksa izin mikrofon sebelum setiap percobaan; backend memeriksa konfigurasi, ketersediaan model/layanan tutor, dan kapasitas panggilan. Jika pemeriksaan atau persiapan gagal, panggilan tidak dimulai dan aplikasi menampilkan pesan masalah.
 - [x] Backend menyiapkan ruang LiveKit dan token sementara khusus ruang; pipeline tutor disiapkan dan Pipecat bergabung sebelum akses diberikan ke aplikasi. Rahasia layanan tetap di backend.
@@ -42,7 +42,7 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [x] Koneksi latihan nyata di Android berhasil: aplikasi dan tutor terhubung melalui ruang LiveKit yang sama, mikrofon mengirim suara, dan audio jawaban tutor diterima di ponsel.
 - [ ] Verifikasi penanganan kegagalan layanan/koneksi pada panggilan nyata di Android, termasuk saat koneksi terputus.
 
-**Status:** koneksi latihan nyata di Android sudah berhasil. Fitur 4 masih memerlukan petunjuk latihan di Home, penyelarasan FR-07, dan verifikasi penanganan kegagalan layanan/koneksi. Menjalankan aplikasi native iOS tetap ditunda.
+**Status:** koneksi latihan nyata di Android sudah berhasil. Fitur 4 masih memerlukan penyelarasan FR-07 dan verifikasi penanganan kegagalan layanan/koneksi. Menjalankan aplikasi native iOS tetap ditunda.
 
 ### Fitur 5 — Tutor mendengar dan menjawab (FR-10/11)
 
@@ -64,9 +64,9 @@ Acuan: *System Requirements Document* (FR-01–19). Ini rencana **membangun sist
 - [ ] Teks ditampilkan di layar panggilan setelah giliran selesai. Saat ini teks dapat dibaca di riwayat setelah panggilan, tetapi belum ditampilkan selama panggilan.
 - [ ] Teks tutor yang ditampilkan hanya bagian yang benar-benar terdengar di ponsel, termasuk saat jawaban terpotong. Teks setelah keluaran suara di server belum membuktikan audio terdengar di ponsel.
 - [ ] Verifikasi bahwa saat pengguna menyela, tutor menghentikan jawaban yang belum terdengar dan kembali mendengarkan. Mekanisme interupsi Pipecat tersedia, tetapi perilakunya pada panggilan nyata belum tervalidasi.
-- [ ] Jika panggilan gagal, aplikasi menampilkan pilihan langsung **Ulangi sesi** atau **Akhiri**. Saat ini kegagalan menampilkan pesan; panggilan yang sudah dibuat disimpan sebagai terputus, dengan akses mencoba lagi melalui riwayat/Home/Testing.
+- [x] Jika koneksi panggilan terputus, aplikasi menampilkan pilihan langsung **Ulangi sesi** atau **Akhiri**. Akhiri menyimpan panggilan sebagai terputus beserta transkrip; Ulangi menyimpannya lalu memulai panggilan baru dengan kunci permintaan baru (pengujian: kembali ke Testing dan memulai setelah status sesi diperbarui). Diuji dengan tes host; belum di perangkat nyata.
 
-**Status:** Fitur 6 sebagian selesai. Layar bersama, kontrol panggilan, dan riwayat transkrip tersedia; avatar/status, teks selama panggilan, pilihan saat gagal, serta validasi interupsi dan kesesuaian teks dengan audio yang terdengar masih diperlukan.
+**Status:** Fitur 6 sebagian selesai. Layar bersama, kontrol panggilan, dan riwayat transkrip tersedia; avatar/status, teks selama panggilan, serta validasi interupsi dan kesesuaian teks dengan audio yang terdengar masih diperlukan.
 
 ## Prioritas 3 — Dua sesi pengujian selesai dengan benar
 

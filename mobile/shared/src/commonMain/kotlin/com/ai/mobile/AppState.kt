@@ -46,10 +46,13 @@ class AppState(
     var transcriptFinal by mutableStateOf(false)
     var transcriptWarning by mutableStateOf(false)
     var endConfirmation by mutableStateOf(false)
+    /** The call dropped; the user chooses between retrying the session and ending it. */
+    var callFailed by mutableStateOf(false)
     private var joinJob: Job? = null
     private var refreshJob: Job? = null
     private var pendingEnrollment: Enrollment? = null
     private var enrollmentKey: String? = null
+    private var retryAfterEnd = false
     private var callJob: Job? = null
     private var historyJob: Job? = null
     private var activeToken: String? = null
@@ -91,9 +94,7 @@ class AppState(
                     return@launch
                 }
                 when (event) {
-                    "Disconnected" -> if (call != null && phase != "Ending") {
-                        phase = "Connection lost"; finish(false)
-                    }
+                    "Disconnected" -> if (call != null && phase != "Ending") markCallFailed()
 
                     "Reconnecting" -> {
                         connectedAccumulated += startedConnected?.let { time - it } ?: 0; startedConnected =
@@ -308,7 +309,7 @@ class AppState(
                 message =
                     e.message?.takeIf { it.length < 180 } ?: "Unable to connect. Check your connection and try again."
                 if (call != null) {
-                    services.calls.disconnect(); finish(false)
+                    services.calls.disconnect(); markCallFailed()
                 } else if (e is ApiFailure) {
                     requestKey = null
                     if (ordinal != null) services.calls.writeSecret(
@@ -413,8 +414,52 @@ class AppState(
                 ), null
             )
             call = null; activeToken = null; startedConnected = null; phase = "Ended"
+            callFailed = false
             if (current.ordinal != null) refresh()
+            if (retryAfterEnd) {
+                retryAfterEnd = false
+                redial(current)
+            }
         }
+    }
+
+    private fun markCallFailed() {
+        if (call == null || phase == "Ending") return
+        // Stop counting connected time while the connection is down.
+        connectedAccumulated += startedConnected?.let { time - it } ?: 0
+        startedConnected = null
+        phase = "Connection lost"
+        endConfirmation = false
+        callFailed = true
+    }
+
+    /** "End": keep the transcript as an interrupted conversation. */
+    fun endFailedCall() {
+        if (!callFailed) return
+        callFailed = false
+        finish(false)
+    }
+
+    /** "Retry session": save what exists, then place a new call for the same session. */
+    fun retryFailedCall() {
+        if (!callFailed) return
+        callFailed = false
+        retryAfterEnd = true
+        finish(false)
+    }
+
+    private suspend fun redial(previous: Conversation) {
+        selected = null
+        if (previous.ordinal == null) {
+            destination = "Home"
+        } else {
+            destination = "Testing"
+            selectedOrdinal = previous.ordinal
+            // The server needs a moment to release the interrupted attempt; wait for fresh state.
+            refreshJob?.join()
+        }
+        message = null
+        start()
     }
 
     fun delete(conversation: Conversation) {
@@ -472,6 +517,7 @@ class AppState(
 
     fun back() {
         when {
+            callFailed -> endFailedCall()
             studySetupOpen -> declineStudy(); endConfirmation -> endConfirmation = false; call != null -> endConfirmation =
             true; settingsOpen -> settingsOpen = false; selected != null -> selected =
             null; destination != "Home" -> destination = "Home"

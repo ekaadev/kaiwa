@@ -187,7 +187,22 @@ fun App() {
             }
         }
         if (state.studySetupOpen) StudyConsentSheet(state, snackbar)
-        if (state.endConfirmation) AlertDialog(
+        if (state.callFailed) AlertDialog(
+            onDismissRequest = {},
+            shape = RoundedCornerShape(40.dp),
+            title = { Text("Call interrupted") },
+            text = {
+                Text(
+                    "The connection was lost. Retry this session, or end it and keep the transcript."
+                )
+            },
+            confirmButton = {
+                TextButton({ state.retryFailedCall() }) {
+                    Text("Retry session", style = ButtonDefaults.textStyleFor(56.dp))
+                }
+            },
+            dismissButton = { TextButton({ state.endFailedCall() }) { Text("End") } })
+        if (state.endConfirmation && !state.callFailed) AlertDialog(
             onDismissRequest = { state.endConfirmation = false },
             shape = RoundedCornerShape(40.dp),
             title = { Text("End this call?") },
@@ -298,8 +313,18 @@ private fun Home(state: AppState) {
         ) {
             Box(
                 Modifier.widthIn(max = cardWidth).fillMaxWidth().height(cardHeight)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(28.dp))
-            )
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(28.dp)),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Text(
+                    "Choose your own topic and speak naturally. You can use English or Japanese; " +
+                        "the tutor replies in Japanese.",
+                    Modifier.padding(24.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Spacer(Modifier.height(actionSpacing))
             Action(
                 if (state.busy) "Preparing…" else "Start to Call",

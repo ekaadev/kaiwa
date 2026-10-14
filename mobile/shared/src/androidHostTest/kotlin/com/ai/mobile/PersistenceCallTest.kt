@@ -73,15 +73,82 @@ class PersistenceCallTest {
         database.close()
     }
 
+    private class FailureFixture {
+        val context: Context = ApplicationProvider.getApplicationContext()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val database = Room.databaseBuilder<ConversationDatabase>(
+            context, File(context.filesDir, "fail-${System.nanoTime()}.db").absolutePath
+        ).setQueryCoroutineContext(Dispatchers.IO).build()
+        val settings = SettingsStore(PreferenceDataStoreFactory.createWithPath(scope = scope, produceFile = { File(context.filesDir, "fail-${System.nanoTime()}.preferences_pb").absolutePath.toPath() }))
+        val native = FakeNative()
+        val starts = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val api = object : ConversationApi() {
+            override suspend fun start(server: String, token: String?, ordinal: Int?, key: String): CallCredentials {
+                starts.add(key)
+                return CallCredentials("call-${starts.size}", "wss://livekit", "temporary", "capability")
+            }
+            override suspend fun transcript(server: String, id: String, token: String, study: Boolean, after: Int): Transcript =
+                Transcript(listOf(Turn(1, "user", "こんにちは")), true)
+            override suspend fun end(server: String, id: String, token: String?, study: Boolean) = Unit
+        }
+        suspend fun state(): AppState {
+            settings.saveServer("https://server")
+            val state = AppState(AppServices(database, settings, native, AppConfiguration("https://server")), scope, api)
+            withTimeout(5000) { while (state.server.isBlank()) delay(10) }
+            return state
+        }
+        fun close(state: AppState) { state.close(); scope.cancel(); database.close() }
+    }
+
+    @Test fun connectionLossOffersRetryOrEndAndEndKeepsTheTranscript() = runBlocking {
+        val fixture = FailureFixture()
+        val state = fixture.state()
+        try {
+            state.start()
+            withTimeout(5000) { while (fixture.native.connects == 0) delay(10) }
+            fixture.native.listener("Disconnected")
+            withTimeout(5000) { while (!state.callFailed) delay(10) }
+            // Nothing is ended or saved until the user chooses.
+            assertNotNull(state.call)
+            assertNull(state.selected)
+            assertEquals("Connection lost", state.phase)
+            state.endFailedCall()
+            withContext(Dispatchers.IO) { withTimeout(5000) { while (state.selected == null) delay(10) } }
+            assertEquals("Interrupted", state.selected!!.outcome)
+            assertFalse(state.callFailed)
+            assertEquals(1, fixture.starts.size)
+        } finally { fixture.close(state) }
+    }
+
+    @Test fun retryingAfterConnectionLossSavesTheDroppedCallAndPlacesANewOne() = runBlocking {
+        val fixture = FailureFixture()
+        val state = fixture.state()
+        try {
+            state.start()
+            withTimeout(5000) { while (fixture.native.connects == 0) delay(10) }
+            fixture.native.listener("Disconnected")
+            withTimeout(5000) { while (!state.callFailed) delay(10) }
+            state.retryFailedCall()
+            withTimeout(8000) { while (fixture.starts.size < 2 || fixture.native.connects < 2) delay(10) }
+            assertEquals(2, fixture.starts.toSet().size, "a retry must use a new request key")
+            assertFalse(state.callFailed)
+            assertEquals("call-2", state.call?.id)
+            val saved = fixture.database.conversations().observe("practice").first()
+            assertEquals("Interrupted", saved.single { it.id == "call-1" }.outcome)
+        } finally { fixture.close(state) }
+    }
+
     private class FakeNative : NativeCalls {
         var disconnected = false
         val connected = CompletableDeferred<Unit>()
         val secrets = mutableMapOf<String, String>()
         override suspend fun requestMicrophone() = true
-        override suspend fun connect(url: String, token: String) { connected.complete(Unit) }
+        override suspend fun connect(url: String, token: String) { connects++; connected.complete(Unit) }
         override suspend fun mute(muted: Boolean) = Unit
         override fun disconnect() { disconnected = true }
-        override fun observe(listener: (String) -> Unit) = Unit
+        var listener: (String) -> Unit = {}
+        var connects = 0
+        override fun observe(listener: (String) -> Unit) { this.listener = listener }
         override fun openPermissionSettings() = Unit
         override fun readSecret(key: String) = secrets[key]
         override fun writeSecret(key: String, value: String?) { if (value == null) secrets.remove(key) else secrets[key] = value }
