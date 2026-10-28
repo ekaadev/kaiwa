@@ -1,6 +1,7 @@
 """Durable study attempt rules. Only trusted transport code may report media events."""
 
 import hashlib
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 from uuid import UUID
@@ -12,6 +13,8 @@ from app.models import StudyAttempt, StudySession
 from app.practice import PracticeConnection
 
 MIN_MEDIA_MS = 120_000
+# A UAT trial is a short scripted scenario, so its valid-call floor is lower than a study session's.
+UAT_MIN_MEDIA_MS = int(os.getenv("UAT_MIN_MEDIA_MS", "30000"))
 STALE_AFTER = timedelta(minutes=21)
 
 
@@ -138,6 +141,8 @@ def finish(db: Session, attempt_id: UUID, reason: str, at: datetime | None = Non
         attempt.connected_at = None
     attempt.ended_at = end
     attempt.end_reason = reason
-    valid_duration = reason == "normal" and attempt.media_ms >= MIN_MEDIA_MS
+    is_uat = attempt.session.participant.kind == "uat"
+    minimum = UAT_MIN_MEDIA_MS if is_uat else MIN_MEDIA_MS
+    valid_duration = reason == "normal" and attempt.media_ms >= minimum
     attempt.status = "awaiting_evidence" if valid_duration else "failed"
     db.commit()

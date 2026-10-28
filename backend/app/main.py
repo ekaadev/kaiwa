@@ -27,7 +27,7 @@ from app.models import (
     StudySession,
 )
 from app.practice import PracticeCallStarter, PracticeIssue, PracticeUnavailable
-from app.study import enroll, find_by_token, valid_enrollment_key
+from app.study import derive_resume_token, enroll, find_by_token, valid_enrollment_key
 from app.study_calls import (
     STALE_AFTER,
     StudyCallConflict,
@@ -38,6 +38,18 @@ from app.study_calls import (
     utc,
 )
 from app.tutor import TutorConfig, warm_up
+from app.uat import (
+    UatConflict,
+    abandon_run,
+    create_run,
+    export_csv,
+    redo_trial,
+    reserve_trial,
+    run_view,
+    save_preference,
+    save_rating,
+    skip_trial,
+)
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -97,6 +109,25 @@ class ParticipantView(BaseModel):
 class EnrollmentView(ParticipantView):
     # Shown only once. The client must store this secret securely, not log it.
     resume_token: str
+
+
+class UatRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pilot: bool = False
+
+
+class UatRatingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ratings: list[int] = Field(min_length=4, max_length=4)
+    # Turn sequence number (as text) to one of the turn labels.
+    labels: dict[str, Literal["Cut off", "Too slow", "Fine"]] = Field(default_factory=dict)
+
+
+class UatPreferenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    test_session: int = Field(ge=1, le=3)
+    scenario: int = Field(ge=0, le=3)
+    choice: Literal["A", "B", "None"]
 
 
 class PracticeStartRequest(BaseModel):
@@ -165,6 +196,18 @@ def get_current_participant(
     return participant
 
 
+def uat_open_enrollment() -> bool:
+    return os.getenv("UAT_OPEN_ENROLLMENT", "").strip() == "1"
+
+
+def require_uat_admin(credentials) -> None:
+    expected = os.getenv("UAT_ADMIN_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=404, detail="Not found")
+    if credentials is None or not hmac.compare_digest(credentials.credentials, expected):
+        raise HTTPException(status_code=401, detail="UAT admin access denied")
+
+
 def create_app(
     engine: Engine | None = None,
     *,
@@ -192,7 +235,7 @@ def create_app(
                 revision = connection.execute(
                     text("SELECT version_num FROM alembic_version")
                 ).scalar()
-                if revision != "0004_enrollment_idempotency":
+                if revision != "0006_uat_abandoned":
                     raise RuntimeError("Run database migrations before starting the API")
         else:
             # Injected engines are isolated test fixtures; deployments use migrations above.
@@ -318,6 +361,8 @@ def create_app(
     def get_my_study(
         participant: Annotated[Participant, Depends(get_current_participant)],
     ) -> ParticipantView:
+        if participant.kind != "study":
+            raise HTTPException(status_code=404, detail="Not found")
         return public_view(participant)
 
     @app.post(
@@ -331,8 +376,9 @@ def create_app(
         participant: Annotated[Participant, Depends(get_current_participant)],
         db: Annotated[Session, Depends(get_db)],
     ) -> PracticeCallView:
-        starter = request.app.state.study_starter
-        if starter is None:
+        if participant.kind != "study":
+            raise HTTPException(status_code=404, detail="Not found")
+        if request.app.state.study_starter is None:
             raise HTTPException(status_code=503, detail="Study calls are unavailable")
         key = request.headers.get("Idempotency-Key", "")
         if not (8 <= len(key) <= 128 and key.isascii() and key.isprintable()):
@@ -341,6 +387,16 @@ def create_app(
             attempt, created = reserve(db, participant.id, ordinal, key)
         except StudyCallConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return await launch_call(request, response, db, attempt, created)
+
+    async def launch_call(
+        request: Request, response: Response, db: Session, attempt: StudyAttempt, created: bool
+    ) -> PracticeCallView:
+        starter = request.app.state.study_starter
+        if starter is None:
+            if created:
+                finish(db, attempt.id, "setup_failed")
+            raise HTTPException(status_code=503, detail="Study calls are unavailable")
         if not created and attempt.status not in ("starting", "active"):
             raise HTTPException(status_code=409, detail="This request has already ended")
         try:
@@ -484,6 +540,137 @@ def create_app(
         if not os.getenv("MONITOR_TOKEN", "").strip():
             raise HTTPException(status_code=404, detail="Not found")
         return Response(MONITOR_HTML, media_type="text/html", headers={"Cache-Control": "no-store"})
+
+    def get_uat_participant(
+        participant: Annotated[Participant, Depends(get_current_participant)],
+    ) -> Participant:
+        if participant.kind != "uat":
+            raise HTTPException(status_code=404, detail="Not found")
+        return participant
+
+    def uat_conflict(exc: UatConflict) -> HTTPException:
+        return HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/v1/uat/runs", status_code=201)
+    def create_uat_run(
+        body: UatRunRequest,
+        request: Request,
+        db: Annotated[Session, Depends(get_db)],
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+        response: Response,
+    ):
+        # Open enrollment trades the researcher code for a server flag; the export stays token-only.
+        if not uat_open_enrollment():
+            require_uat_admin(credentials)
+        key = request.headers.get("Idempotency-Key", "")
+        if not valid_enrollment_key(key):
+            raise HTTPException(
+                status_code=400, detail="A valid Idempotency-Key (32-128 characters) is required"
+            )
+        token = derive_resume_token(key)
+        participant = create_run(db, pilot=body.pilot, key=key, resume_token=token)
+        response.headers["Cache-Control"] = "no-store"
+        return {**run_view(db, participant), "resume_token": token}
+
+    @app.get("/v1/uat/me")
+    def get_uat_run(
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+        response: Response,
+    ):
+        response.headers["Cache-Control"] = "no-store"
+        db.refresh(participant)
+        return run_view(db, participant)
+
+    @app.post("/v1/uat/trials/{ordinal}/calls", response_model=PracticeCallView, status_code=201)
+    async def start_uat_call(
+        ordinal: int,
+        _: StudyStartRequest,
+        request: Request,
+        response: Response,
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ) -> PracticeCallView:
+        if request.app.state.study_starter is None:
+            raise HTTPException(status_code=503, detail="Study calls are unavailable")
+        key = request.headers.get("Idempotency-Key", "")
+        if not (8 <= len(key) <= 128 and key.isascii() and key.isprintable()):
+            raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+        try:
+            attempt, created = reserve_trial(db, participant.id, ordinal, key)
+        except UatConflict as exc:
+            raise uat_conflict(exc) from exc
+        return await launch_call(request, response, db, attempt, created)
+
+    @app.post("/v1/uat/trials/{ordinal}/skip", status_code=204)
+    def skip_uat_trial(
+        ordinal: int,
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ):
+        try:
+            skip_trial(db, participant.id, ordinal)
+        except UatConflict as exc:
+            raise uat_conflict(exc) from exc
+        return Response(status_code=204)
+
+    @app.post("/v1/uat/trials/{ordinal}/redo", status_code=204)
+    def redo_uat_trial(
+        ordinal: int,
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ):
+        try:
+            redo_trial(db, participant.id, ordinal)
+        except UatConflict as exc:
+            raise uat_conflict(exc) from exc
+        return Response(status_code=204)
+
+    @app.put("/v1/uat/trials/{ordinal}/rating", status_code=204)
+    def rate_uat_trial(
+        ordinal: int,
+        body: UatRatingRequest,
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ):
+        try:
+            save_rating(db, participant.id, ordinal, body.ratings, dict(body.labels))
+        except UatConflict as exc:
+            raise uat_conflict(exc) from exc
+        return Response(status_code=204)
+
+    @app.put("/v1/uat/preferences", status_code=204)
+    def set_uat_preference(
+        body: UatPreferenceRequest,
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ):
+        try:
+            save_preference(db, participant.id, body.test_session, body.scenario, body.choice)
+        except UatConflict as exc:
+            raise uat_conflict(exc) from exc
+        return Response(status_code=204)
+
+    @app.post("/v1/uat/abandon", status_code=204)
+    def abandon_uat_run(
+        participant: Annotated[Participant, Depends(get_uat_participant)],
+        db: Annotated[Session, Depends(get_db)],
+    ):
+        try:
+            abandon_run(db, participant.id)
+        except UatConflict as exc:
+            raise uat_conflict(exc) from exc
+        return Response(status_code=204)
+
+    @app.get("/v1/uat/export.csv", include_in_schema=False)
+    def uat_export(
+        db: Annotated[Session, Depends(get_db)],
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    ):
+        require_uat_admin(credentials)
+        return Response(
+            export_csv(db), media_type="text/csv", headers={"Cache-Control": "no-store"}
+        )
 
     @app.get("/v1/study/calls/{call_id}/transcript")
     async def study_transcript(

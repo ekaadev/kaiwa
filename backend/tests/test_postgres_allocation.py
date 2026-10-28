@@ -24,9 +24,9 @@ def test_concurrent_postgres_enrollment_stays_balanced():
             db.add(AllocationCounter(id=1, fixed_first=0, adaptive_first=0))
             db.commit()
 
-        def create_one(_):
+        def create_one(i):
             with Session(engine) as db:
-                return enroll(db, "test-only").participant.id
+                return enroll(db, "test-only", f"test-key-{i:04d}-" + "x" * 24).participant.id
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             ids = list(pool.map(create_one, range(24)))

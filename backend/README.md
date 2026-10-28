@@ -27,7 +27,7 @@ uv run --env-file .env uvicorn app.main:app --reload
 ```
 
 uvicorn tidak membaca `.env` sendiri; muat dengan `--env-file`. Startup API **tidak** membuat
-tabel; skema dikelola Alembic (revisi saat ini `0004_enrollment_idempotency`). Database lama yang
+tabel; skema dikelola Alembic (revisi saat ini `0006_uat_abandoned`). Database lama yang
 dibuat sebelum migrasi harus dibackup dan diverifikasi sesuai `0001_study_foundation`
 sebelum `alembic stamp`; jangan men-stamp database yang belum diverifikasi.
 
@@ -53,6 +53,7 @@ Template: [`.env.example`](.env.example) (lokal) dan
 | Model | `TUTOR_WHISPER_PATH`, `TUTOR_KOKORO_MODEL_PATH`, `TUTOR_KOKORO_VOICES_PATH` | Path absolut di luar repository. Whisper harus `small` multilingual, bukan `small.en`. |
 | LLM | `TUTOR_LLM_BASE_URL` (akhiran `/v1`), `TUTOR_LLM_API_KEY` | Harus mengiklankan `Qwen/Qwen3-1.7B`. Jangan pakai layanan eksternal tak disetujui untuk ucapan peserta. |
 | GPU | `TUTOR_WHISPER_DEVICE`, `TUTOR_WHISPER_COMPUTE_TYPE`, `TUTOR_KOKORO_EXECUTION_PROVIDER`, `ONNX_PROVIDER` | Default CPU (`cpu`/`int8`/`CPUExecutionProvider`). GPU: `cuda`/`float16`/`CUDAExecutionProvider`, dengan `ONNX_PROVIDER=CPUExecutionProvider` untuk muat awal. |
+| UAT | `UAT_ADMIN_TOKEN`, `UAT_OPEN_ENROLLMENT`, `UAT_MIN_MEDIA_MS` | `UAT_OPEN_ENROLLMENT=1` membuat pembuatan run UAT terbuka tanpa kode (aplikasi hanya menampilkannya di build mode peneliti, bukan kunci server); selain itu butuh token. Token peneliti untuk mengunduh `GET /v1/uat/export.csv` (kosong = endpoint UAT admin dinonaktifkan). Minimum audio valid per trial, default 30000 ms. Mode fixed/adaptive per trial hanya ada di server dan ekspor; respons ke aplikasi hanya memuat huruf versi A/B. |
 | Studi | `STUDY_CONSENT_VERSION`, `STUDY_EVIDENCE_DIR`, `STUDY_RETENTION_DAYS` | Direktori absolut privat mode 700. Retensi 1–3650 hari, **tanpa default**; jangan menetapkan sendiri tanpa persetujuan. |
 | Evidence S3 | `STUDY_EVIDENCE_BUCKET`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Bila bucket diisi, `STUDY_EVIDENCE_DIR` hanya staging sementara dan hasil final disimpan di bucket privat `study/<call-id>/`. |
 
