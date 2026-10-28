@@ -78,7 +78,7 @@ class StudyEnrollmentTest {
             override suspend fun transcript(server: String, id: String, token: String, study: Boolean, after: Int): Transcript = Transcript(emptyList(), false)
             override suspend fun end(server: String, id: String, token: String?, study: Boolean) = Unit
         }
-        fun state() = AppState(AppServices(database, settings, native, AppConfiguration(url, development)), scope, api)
+        fun state() = AppState(AppServices(database, settings, native, AppConfiguration(url, development)), scope, api).also { it.testingTab = "Study" }
         fun close(state: AppState) {
             state.close()
             scope.cancel()
@@ -322,10 +322,9 @@ class StudyEnrollmentTest {
             assertTrue(fixture.native.events.contains("connect"))
             assertFalse(state.studySetupOpen)
             state.finish()
-            await { state.call == null && !state.busy && state.selected != null }
+            await { state.call == null && !state.busy && state.phase == "Ended" }
             fixture.native.permissionGranted = false
             fixture.native.allowed = false
-            state.selected = null
             state.start()
             await { !state.busy && state.microphonePermissionNotice }
             assertEquals(2, fixture.native.permissionPrompts)

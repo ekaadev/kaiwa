@@ -40,6 +40,17 @@ actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) = BackHandl
 actual fun formatDate(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
 
+actual fun localEpochDay(timestamp: Long): Long =
+    Math.floorDiv(timestamp + java.util.TimeZone.getDefault().getOffset(timestamp), 86_400_000L)
+
+@Composable
+actual fun rememberReducedMotion(): Boolean {
+    val resolver = LocalContext.current.contentResolver
+    return remember(resolver) {
+        Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }
+}
+
 private var sharedServices: AppServices? = null
 
 @Composable
@@ -156,6 +167,15 @@ private class AndroidCalls(private val context: Context, private val scope: Coro
 
     override fun observe(listener: (String) -> Unit) {
         this.listener = listener
+    }
+
+    override fun shareText(title: String, text: String): Boolean = try {
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, title).putExtra(Intent.EXTRA_TEXT, text)
+        context.startActivity(Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (e: android.content.ActivityNotFoundException) {
+        false
     }
 
     override fun openPermissionSettings() {

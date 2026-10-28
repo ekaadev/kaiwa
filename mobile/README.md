@@ -6,15 +6,28 @@ Milestone saat ini adalah Android; eksekusi iOS native ditunda.
 
 ## Fitur
 
-- **Home / Practice**: panggilan latihan anonim; backend menetapkan metode adaptive dan data
-  tidak masuk data penelitian.
-- **Testing**: membaca persetujuan, mendaftar sebagai peserta, lalu menjalani Sesi 1 dan 2.
-  Token pemulihan disimpan aman di perangkat. Persetujuan saat ini masih **draf pengembangan**.
-- **Panggilan**: izin mikrofon diperiksa pada setiap percobaan. Hang Up meminta pengakhiran
-  normal ke server; panggilan berhenti jika aplikasi masuk background (dicatat terputus).
-- **Session**: riwayat transkrip lokal (cari, baca, unduh ulang, hapus). Menghapus riwayat
+Tampilan mengikuti wireframe Kaiwa (palet moss, tombol "chunky", font Nunito + Zen Maru Gothic).
+
+- **Home**: panggung avatar, tombol Start call, chip streak, dan kartu *Last call*. Panggilan latihan
+  bersifat anonim; backend menetapkan metode adaptive dan data tidak masuk data penelitian.
+- **Panggilan**: layar penuh dengan lencana Speaking/Listening/Connecting, timer, subtitle, dan tiga
+  kontrol (furigana, mikrofon, akhiri). Latar bercahaya hanya mengikuti status bicara, bukan keputusan
+  detektor, dan statis jika animasi dikurangi. Izin mikrofon diperiksa pada setiap percobaan;
+  panggilan berhenti jika aplikasi masuk background (dicatat terputus).
+  Panggilan tanpa ucapan pelajar tidak disimpan.
+- **Session**: riwayat panggilan (tanggal, durasi, jumlah giliran) dan transkrip. Menghapus riwayat
   lokal tidak menghapus evidence di server.
-- **Settings**: izin mikrofon dan informasi partisipasi; tidak ada input alamat server atau token.
+- **Testing**: alur UAT buta A/B yang dijalankan server (ikhtisar, brief, penilaian Likert, penandaan
+  giliran, preferensi pasangan, redo). Run dibuat otomatis saat "Start trials" pertama, jenis Pilot/Main dipilih lewat chip di pojok kanan atas (server harus menyalakan
+  `UAT_OPEN_ENROLLMENT=1`). Mode fixed/adaptive tiap trial tidak pernah dikirim ke aplikasi. Layar
+  pendaftaran studi dua sesi lama sudah dihapus dari aplikasi; endpoint backend-nya masih ada.
+- Tidak ada layar Settings maupun input alamat server atau token; izin mikrofon diminta saat panggilan.
+
+Mode peneliti diaktifkan saat build: `-PresearcherMode=true` atau `KAIWA_RESEARCHER_MODE=true`.
+Tanpa itu, alur UAT, kolom waktu balasan, ekspor CSV, dan overlay debug tidak muncul.
+
+Belum tersedia (placeholder): furigana dan terjemahan Inggris
+(backend belum mengirim) dan nilai detektor di overlay debug (belum direkam server).
 
 Selesainya sesi studi ditentukan server, bukan timer atau tombol di klien.
 
@@ -27,7 +40,7 @@ Selesainya sesi studi ditentukan server, bukan timer atau tombol di klien.
 | `shared/src/iosMain`, `iosApp/` | Persistensi bersama dan jembatan Swift LiveKit/Keychain |
 | `shared/src/commonTest`, `androidHostTest` | Tes logika bersama dan tes host Robolectric |
 | `androidApp/` | Host aplikasi Android |
-| `licenses/` | Lisensi font dan ikon yang dibundel (Roboto, Material Symbols Rounded) |
+| `licenses/` | Lisensi font dan ikon yang dibundel (Nunito, Zen Maru Gothic, Material Symbols Rounded) |
 
 ## Alamat server
 
@@ -37,6 +50,8 @@ Alamat control API ditanam saat build, dengan prioritas:
 2. variabel lingkungan `CONVERSATION_SERVER_URL`
 3. `conversationServerUrl=...` di `mobile/local.properties` (diabaikan Git; dipakai tombol
    **Run** Android Studio)
+
+Mode peneliti juga bisa diatur di `mobile/local.properties` dengan `researcherMode=true`.
 
 Build tanpa alamat menampilkan pesan tidak tersedia dan tidak membuat peserta. Build release
 hanya menerima HTTPS; build development mengizinkan HTTP.

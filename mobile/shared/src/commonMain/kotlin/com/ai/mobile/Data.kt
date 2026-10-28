@@ -14,7 +14,14 @@ import kotlinx.serialization.json.Json
 val appJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
 @Serializable
-data class Turn(val sequence: Int, val role: String, val text: String, val timestamp: String = "")
+data class Turn(
+    val sequence: Int,
+    val role: String,
+    val text: String,
+    val timestamp: String = "",
+    /** English gloss; the backend does not send one yet. */
+    val gloss: String = "",
+)
 @Serializable
 data class Transcript(val turns: List<Turn> = emptyList(), val finalized: Boolean = false)
 @Serializable
@@ -33,6 +40,52 @@ data class CallCredentials(
     val transcript_token: String? = null
 )
 
+@Serializable
+data class UatTrial(
+    val ordinal: Int,
+    val test_session: Int,
+    val scenario: Int,
+    val repetition: Int,
+    /** Neutral letter; the server never sends the detection method. */
+    val version: String,
+    /** pending, in_progress, awaiting_rating, rated or skipped. */
+    val status: String,
+    val attempts: Int = 0,
+    val available: Boolean = false,
+    val call_id: String? = null,
+    val ratings: List<Int>? = null,
+    val labels: Map<String, String>? = null,
+) {
+    val finished get() = status == "rated" || status == "skipped"
+    /** 1-based position inside its test session (8 per session). */
+    val positionInSession get() = (ordinal - 1) % 8 + 1
+}
+@Serializable
+data class UatPreferenceView(val test_session: Int, val scenario: Int, val choice: String)
+@Serializable
+data class UatRun(
+    val participant_id: String,
+    val label: String,
+    val pilot: Boolean,
+    val test_session: Int,
+    val complete: Boolean,
+    val trials: List<UatTrial>,
+    val preferences: List<UatPreferenceView> = emptyList(),
+    val abandoned: Boolean = false,
+) {
+    fun inSession(session: Int = test_session) = trials.filter { it.test_session == session }
+    fun done(session: Int = test_session) = inSession(session).count { it.finished }
+    fun scenarioDone(scenario: Int, session: Int = test_session) =
+        inSession(session).count { it.scenario == scenario && it.finished }
+    fun nextTrial() = trials.firstOrNull { !it.finished }
+    fun trial(ordinal: Int) = trials.firstOrNull { it.ordinal == ordinal }
+}
+@Serializable
+data class UatCreated(val resume_token: String)
+
+/** Conversations of UAT trials are stored with ordinal = this base + trial ordinal. */
+const val UAT_ORDINAL_BASE = 1000
+
 @Entity(tableName = "conversations")
 data class Conversation(
     @PrimaryKey val id: String,
@@ -46,7 +99,12 @@ data class Conversation(
     val transcriptFinal: Boolean = false,
 ) {
     fun turns(): List<Turn> = appJson.decodeFromString(turnsJson)
-    fun title(): String = if (ordinal == null) "Practice conversation" else "Testing · Session $ordinal"
+    val uatOrdinal: Int? get() = ordinal?.takeIf { it >= UAT_ORDINAL_BASE }?.minus(UAT_ORDINAL_BASE)
+    fun title(): String = when {
+        ordinal == null -> "Practice conversation"
+        uatOrdinal != null -> "Testing · Trial $uatOrdinal"
+        else -> "Testing · Session $ordinal"
+    }
     fun matches(query: String): Boolean = title().contains(query, true) || turns().any { it.text.contains(query, true) }
 }
 
@@ -87,11 +145,15 @@ interface NativeCalls {
     fun openPermissionSettings()
     fun readSecret(key: String): String?
     fun writeSecret(key: String, value: String?)
+    /** Opens the system share sheet with plain text; false when the platform cannot share yet. */
+    fun shareText(title: String, text: String): Boolean = false
 }
 
 data class AppConfiguration(
     val serverUrl: String = BuildConfiguration.serverUrl,
     val allowDevelopmentHttp: Boolean = false,
+    /** Build-time switch: shows Testing, timing details and the researcher overlay. */
+    val researcherMode: Boolean = BuildConfiguration.researcherMode,
 )
 
 class AppServices(
@@ -104,6 +166,11 @@ class AppServices(
 @Composable
 expect fun platformServices(): AppServices
 expect fun formatDate(timestamp: Long): String
+/** Whole days since 1970-01-01 in the device's local time zone. */
+expect fun localEpochDay(timestamp: Long): Long
+/** True when the user asked the system to reduce animation. */
+@Composable
+expect fun rememberReducedMotion(): Boolean
 
 fun validateServer(raw: String, allowDevelopmentHttp: Boolean = false): String {
     val value = raw.trim().trimEnd('/')

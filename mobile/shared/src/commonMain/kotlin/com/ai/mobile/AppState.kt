@@ -13,13 +13,41 @@ import kotlin.uuid.Uuid
 
 enum class StudyJoinPhase { Consent, Microphone, Registering }
 
+/** What the server reports about taking a call right now. */
+enum class ServerStatus { Checking, Online, Busy, Offline }
+
+/** Where the UAT flow is inside the Testing tab. */
+enum class UatScreen { Overview, Brief, Rating, Marks, Preference }
+
 class AppState(
     val services: AppServices,
     private val scope: CoroutineScope,
     val api: ConversationApi = ConversationApi()
 ) {
+    val researcherMode = services.configuration.researcherMode
     var destination by mutableStateOf("Home")
-    var settingsOpen by mutableStateOf(false)
+    /** Furigana display preference for transcripts and subtitles. */
+    var furigana by mutableStateOf(true)
+    /** "UAT" or "Study" inside Testing (researcher mode). */
+    var testingTab by mutableStateOf("UAT")
+    /** Server-held UAT run for this expert; null until a run is created on this device. */
+    var uat by mutableStateOf<UatRun?>(null)
+    var uatToken by mutableStateOf("")
+    var uatScreen by mutableStateOf(UatScreen.Overview)
+    /** Trial ordinal on screen (1-24). */
+    var uatTrial by mutableStateOf(1)
+    var uatPair by mutableStateOf(0)
+    var uatBusy by mutableStateOf(false)
+    /** Pilot or main for the run that the first "Start trials" will create. */
+    var uatPilotChoice by mutableStateOf(true)
+    var uatError by mutableStateOf<String?>(null)
+    /** Unsent rating and turn labels for the trial on screen. */
+    var draftRatings by mutableStateOf(List(4) { 0 })
+    var draftLabels by mutableStateOf<Map<Int, String>>(emptyMap())
+    private var uatEnrollKey: String? = null
+    var sessionFilter by mutableStateOf("All")
+    var serverStatus by mutableStateOf(ServerStatus.Checking)
+    private var statusJob: Job? = null
     var server by mutableStateOf(runCatching {
         val configured = services.configuration.serverUrl
         if (configured.isBlank()) "" else validateServer(configured, services.configuration.allowDevelopmentHttp)
@@ -68,6 +96,9 @@ class AppState(
         scope.launch {
             try {
                 token = if (server.isNotBlank()) services.calls.readSecret("study:$server") ?: "" else ""
+                if (server.isNotBlank()) {
+                    uatToken = services.calls.readSecret("uat:$server") ?: ""
+                }
                 watchHistory()
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -75,6 +106,7 @@ class AppState(
             } finally {
                 settingsReady = true
             }
+            if (uatToken.isNotBlank()) refreshUat()
             if (token.isNotBlank()) refresh()
             else if (destination == "Testing") beginStudySetup()
         }
@@ -123,8 +155,32 @@ class AppState(
         }
     }
 
+    /** Asks the server whether a call can start now; the Home badge shows exactly this answer. */
+    fun checkServer() {
+        if (server.isBlank()) {
+            serverStatus = ServerStatus.Offline; return
+        }
+        if (statusJob?.isActive == true || showingCallScreen) return
+        statusJob = scope.launch {
+            serverStatus = try {
+                withTimeout(8_000) { api.readiness(server) }
+                ServerStatus.Online
+            } catch (e: Exception) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                statusFor(e)
+            }
+        }
+    }
+
+    private fun statusFor(e: Exception) =
+        if (e is ApiFailure && e.message?.contains("slots are busy") == true) ServerStatus.Busy else ServerStatus.Offline
+
     fun enterTesting() {
         destination = "Testing"
+        if (testingTab == "UAT") {
+            if (uatToken.isNotBlank()) refreshUat()
+            return
+        }
         if (!settingsReady) return
         if (token.isBlank()) beginStudySetup() else refresh()
     }
@@ -250,19 +306,24 @@ class AppState(
         ) != null
     }
 
-    fun start() {
+    fun start(practice: Boolean = false, trial: Int? = null) {
         if (busy || starting || showingCallScreen) return
-        val ordinal = if (destination == "Testing") selectedOrdinal else null
-        if (ordinal != null && token.isBlank()) {
+        val ordinal = trial?.plus(UAT_ORDINAL_BASE)
+            ?: if (destination == "Testing" && !practice) selectedOrdinal else null
+        if (trial == null && ordinal != null && token.isBlank()) {
             beginStudySetup()
             return
         }
-        if (ordinal != null && !canStartStudy(ordinal)) {
+        if (trial == null && ordinal != null && !canStartStudy(ordinal)) {
             message = "This session isn't available yet. Refresh Testing and try again."; return
         }
         val configuredServer = server
-        val configuredToken = token
-        val callOwner = if (ordinal == null) "practice" else participant!!.participant_id
+        val configuredToken = if (trial != null) uatToken else token
+        val callOwner = when {
+            trial != null -> uat?.participant_id ?: return
+            ordinal == null -> "practice"
+            else -> participant!!.participant_id
+        }
         microphonePermissionNotice = false
         starting = true
         callJob = scope.launch {
@@ -283,7 +344,8 @@ class AppState(
                 val key = secret?.let { services.calls.readSecret(it) } ?: requestKey ?: Uuid.random().toString()
                 requestKey = key
                 if (secret != null) services.calls.writeSecret(secret, key)
-                val issued = api.start(configuredServer, configuredToken, ordinal, key)
+                val issued = if (trial != null) api.startUatTrial(configuredServer, configuredToken, trial, key)
+                else api.start(configuredServer, configuredToken, ordinal, key)
                 requestKey = null
                 activeToken = if (ordinal == null) issued.transcript_token else configuredToken
                 val conversation = Conversation(issued.call_id, callOwner, configuredServer, ordinal, time)
@@ -308,6 +370,7 @@ class AppState(
                 if (e is CancellationException) throw e
                 message =
                     e.message?.takeIf { it.length < 180 } ?: "Unable to connect. Check your connection and try again."
+                if (call == null) serverStatus = statusFor(e)
                 if (call != null) {
                     services.calls.disconnect(); markCallFailed()
                 } else if (e is ApiFailure) {
@@ -400,11 +463,23 @@ class AppState(
                 turnsJson = appJson.encodeToString(turns),
                 transcriptFinal = transcriptFinal
             )
+            val trial = current.uatOrdinal
+            val learnerSpoke = saved.hasLearnerSpeech()
             try {
-                services.database.conversations().save(saved); selected = saved; destination = "Session"
+                if (learnerSpoke) services.database.conversations().save(saved)
+                else {
+                    // Calls without learner speech are not kept in the local history.
+                    services.database.conversations().delete(saved.id)
+                    message = "No speech from you was heard, so this call was not saved."
+                }
             } catch (e: Exception) {
                 selected = saved; message =
                     "Conversation could not be saved. Keep this screen open to read your transcript."
+            }
+            destination = if (current.ordinal != null) "Testing" else "Home"
+            if (trial != null) {
+                uatTrial = trial
+                afterTrialCall(ended)
             }
             if (current.ordinal != null) services.calls.writeSecret(
                 attemptSecret(
@@ -415,7 +490,7 @@ class AppState(
             )
             call = null; activeToken = null; startedConnected = null; phase = "Ended"
             callFailed = false
-            if (current.ordinal != null) refresh()
+            if (current.ordinal != null && current.uatOrdinal == null) refresh()
             if (retryAfterEnd) {
                 retryAfterEnd = false
                 redial(current)
@@ -450,6 +525,14 @@ class AppState(
 
     private suspend fun redial(previous: Conversation) {
         selected = null
+        if (previous.uatOrdinal != null) {
+            destination = "Testing"; testingTab = "UAT"
+            uatTrial = previous.uatOrdinal!!
+            refreshUat().join()
+            message = null
+            startTrialCall()
+            return
+        }
         if (previous.ordinal == null) {
             destination = "Home"
         } else {
@@ -491,7 +574,7 @@ class AppState(
         scope.launch {
             try {
                 val auth =
-                    if (conversation.ordinal == null) services.calls.readSecret("call:${conversation.server}:${conversation.id}") else if (conversation.owner == participant?.participant_id && conversation.server == server) token else null
+                    if (conversation.ordinal == null) services.calls.readSecret("call:${conversation.server}:${conversation.id}") else if (conversation.uatOrdinal != null && conversation.owner == uat?.participant_id && conversation.server == server) uatToken else if (conversation.owner == participant?.participant_id && conversation.server == server) token else null
                 if (auth.isNullOrBlank()) {
                     if (!automatic) message = "Transcript access is unavailable for this conversation."; return@launch
                 }
@@ -515,11 +598,180 @@ class AppState(
         }
     }
 
+    /** Reads this expert's run from the server; the server is the only holder of trial state. */
+    fun refreshUat(): Job {
+        if (server.isBlank() || uatToken.isBlank()) return scope.launch { }
+        return scope.launch {
+            uatBusy = true
+            try {
+                uat = api.uatRun(server, uatToken)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                message = if (e is ApiFailure) e.message else "The UAT run could not be loaded."
+            } finally {
+                uatBusy = false
+            }
+        }
+    }
+
+    private fun createUatRun(pilot: Boolean, then: () -> Unit) {
+        if (uatBusy) return
+        if (server.isBlank()) {
+            uatError = "Testing is not connected yet. Please try again later."; return
+        }
+        uatBusy = true; uatError = null
+        scope.launch {
+            try {
+                val key = uatEnrollKey ?: (Uuid.random().toString() + Uuid.random().toString()).replace("-", "")
+                uatEnrollKey = key
+                val (run, resume) = api.createUatRun(server, null, pilot, key)
+                services.calls.writeSecret("uat:$server", resume)
+                uatToken = resume; uat = run; uatEnrollKey = null
+                uatScreen = UatScreen.Overview
+                then()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                uatError = if (e is ApiFailure) e.message else "The run could not be created. Check the connection."
+            } finally {
+                uatBusy = false
+            }
+        }
+    }
+
+    /** Leaves the current run: the server keeps its data and marks it abandoned. */
+    fun exitUatRun() = uatAction {
+        if (!showingCallScreen) {
+            api.abandonUatRun(server, uatToken)
+            detachUatRun()
+            message = "You left the run. Its results stay on the server."
+        }
+    }
+
+    /** Detaches this device from the finished run; the run and its data stay on the server. */
+    fun startNewUatRun() {
+        if (uatBusy || showingCallScreen) return
+        detachUatRun()
+    }
+
+    private fun detachUatRun() {
+        runCatching { services.calls.writeSecret("uat:$server", null) }
+        uatToken = ""; uat = null; uatScreen = UatScreen.Overview; uatError = null
+        draftRatings = List(4) { 0 }; draftLabels = emptyMap()
+    }
+
+    private fun uatAction(block: suspend () -> Unit) {
+        if (uatBusy) return
+        uatBusy = true
+        scope.launch {
+            try {
+                block()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                message = if (e is ApiFailure) e.message else "That step could not be saved. Check the connection."
+            } finally {
+                uatBusy = false
+            }
+        }
+    }
+
+    /** Opens the brief for the next trial that still needs work, or its rating if the call already ended. */
+    fun startTrials() {
+        val run = uat
+        if (run == null) {
+            // The run is created on the server only when the first trial is started.
+            createUatRun(uatPilotChoice) { uat?.nextTrial()?.let(::openTrial) }
+            return
+        }
+        run.nextTrial()?.let(::openTrial)
+    }
+
+    private fun openTrial(trial: UatTrial) {
+        uatTrial = trial.ordinal
+        draftRatings = List(4) { 0 }; draftLabels = emptyMap()
+        uatScreen = if (trial.status == "awaiting_rating") UatScreen.Rating else UatScreen.Brief
+    }
+
+    fun startTrialCall() {
+        if (busy || starting || showingCallScreen || uat?.trial(uatTrial) == null) return
+        destination = "Testing"
+        start(trial = uatTrial)
+    }
+
+    /** After a trial call ends: refresh the server state, then rate it or explain why it cannot be rated. */
+    private fun afterTrialCall(normalEnd: Boolean) {
+        scope.launch {
+            refreshUat().join()
+            val trial = uat?.trial(uatTrial)
+            if (trial?.status == "awaiting_rating") {
+                draftRatings = List(4) { 0 }; draftLabels = emptyMap(); uatScreen = UatScreen.Rating
+            } else {
+                uatScreen = UatScreen.Brief
+                message = if (normalEnd) "That call was too short to count. Please try the trial again."
+                else "The call was interrupted. You can start the trial again."
+            }
+        }
+    }
+
+    fun skipTrial() = uatAction {
+        api.skipUatTrial(server, uatToken, uatTrial)
+        uat = api.uatRun(server, uatToken)
+        advanceFrom(uatTrial)
+    }
+
+    fun rate(item: Int, score: Int) {
+        draftRatings = draftRatings.mapIndexed { i, r -> if (i == item) score else r }
+    }
+
+    fun redoTrial() = uatAction {
+        api.redoUatTrial(server, uatToken, uatTrial)
+        uat = api.uatRun(server, uatToken)
+        draftRatings = List(4) { 0 }; draftLabels = emptyMap()
+        uatScreen = UatScreen.Brief
+    }
+
+    fun markTurn(sequence: Int, label: String) {
+        draftLabels = draftLabels + (sequence to label)
+    }
+
+    fun saveTrial() = uatAction {
+        api.rateUatTrial(server, uatToken, uatTrial, draftRatings, draftLabels.mapKeys { it.key.toString() })
+        val run = api.uatRun(server, uatToken)
+        uat = run
+        val trial = run.trial(uatTrial) ?: return@uatAction
+        val pair = run.inSession(trial.test_session).filter { it.scenario == trial.scenario }
+        if (pair.all { it.finished } && run.preferences.none { it.test_session == trial.test_session && it.scenario == trial.scenario }) {
+            uatPair = trial.scenario; uatScreen = UatScreen.Preference
+        } else advanceFrom(uatTrial)
+    }
+
+    fun choosePreference(choice: String) = uatAction {
+        val trial = uat?.trial(uatTrial) ?: return@uatAction
+        api.setUatPreference(server, uatToken, trial.test_session, uatPair, choice)
+        uat = api.uatRun(server, uatToken)
+        advanceFrom(uatTrial)
+    }
+
+    private fun advanceFrom(@Suppress("UNUSED_PARAMETER") trial: Int) {
+        val next = uat?.nextTrial()
+        if (next == null) {
+            uatScreen = UatScreen.Overview
+            message = "All test sessions are complete."
+        } else if (next.test_session != uat?.trial(uatTrial)?.test_session) {
+            uatScreen = UatScreen.Overview
+            message = "Test session ${next.test_session - 1} is complete."
+        } else openTrial(next)
+    }
+
+    /** The trial a saved conversation belongs to, if it was a UAT call. */
+    fun trialOf(conversation: Conversation): UatTrial? = conversation.uatOrdinal?.let { uat?.trial(it) }
+
     fun back() {
         when {
             callFailed -> endFailedCall()
+            destination == "Testing" && testingTab == "UAT" && selected == null && uatScreen != UatScreen.Overview ->
+                uatScreen = if (uatScreen == UatScreen.Marks) UatScreen.Rating else UatScreen.Overview
             studySetupOpen -> declineStudy(); endConfirmation -> endConfirmation = false; call != null -> endConfirmation =
-            true; settingsOpen -> settingsOpen = false; selected != null -> selected =
+            true; selected != null -> selected =
             null; destination != "Home" -> destination = "Home"
         }
     }

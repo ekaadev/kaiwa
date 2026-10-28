@@ -20,6 +20,17 @@ actual fun formatDate(timestamp: Long): String =
     NSDateFormatter().apply { dateStyle = NSDateFormatterMediumStyle; timeStyle = NSDateFormatterShortStyle }
         .stringFromDate(NSDate.dateWithTimeIntervalSince1970(timestamp / 1000.0))
 
+actual fun localEpochDay(timestamp: Long): Long {
+    val date = NSDate.dateWithTimeIntervalSince1970(timestamp / 1000.0)
+    val offset = NSTimeZone.localTimeZone.secondsFromGMTForDate(date) * 1000L
+    return Math_floorDiv(timestamp + offset, 86_400_000L)
+}
+
+private fun Math_floorDiv(a: Long, b: Long): Long = if (a >= 0) a / b else -((-a + b - 1) / b)
+
+@Composable
+actual fun rememberReducedMotion(): Boolean = remember { platform.UIKit.UIAccessibilityIsReduceMotionEnabled() }
+
 @Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
     DisposableEffect(enabled, onBack) {

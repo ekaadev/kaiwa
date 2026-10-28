@@ -21,6 +21,9 @@ abstract class GenerateAppConfiguration : DefaultTask() {
     @get:Input
     abstract val serverUrl: Property<String>
 
+    @get:Input
+    abstract val researcherMode: Property<Boolean>
+
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
 
@@ -37,21 +40,24 @@ abstract class GenerateAppConfiguration : DefaultTask() {
         val literal = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$")
         val source = outputDirectory.get().file("com/ai/mobile/BuildConfiguration.kt").asFile
         source.parentFile.mkdirs()
-        source.writeText("package com.ai.mobile\ninternal object BuildConfiguration { const val serverUrl = \"$literal\" }\n")
+        source.writeText("package com.ai.mobile\ninternal object BuildConfiguration {\n    const val serverUrl = \"$literal\"\n    const val researcherMode = ${researcherMode.get()}\n}\n")
     }
 }
 
-val localServerUrl = providers.fileContents(
+val localProperties = providers.fileContents(
     rootProject.layout.projectDirectory.file("local.properties")
-).asText.map { contents ->
-    Properties().apply { contents.reader().use { load(it) } }
-        .getProperty("conversationServerUrl", "")
-}
+).asText.map { contents -> Properties().apply { contents.reader().use { load(it) } } }
+val localServerUrl = localProperties.map { it.getProperty("conversationServerUrl", "") }
+val localResearcherMode = localProperties.map { it.getProperty("researcherMode", "") }
 
 val generateAppConfiguration = tasks.register<GenerateAppConfiguration>("generateAppConfiguration") {
     serverUrl.set(providers.gradleProperty("conversationServerUrl")
         .orElse(providers.environmentVariable("CONVERSATION_SERVER_URL"))
         .orElse(localServerUrl).orElse(""))
+    researcherMode.set(providers.gradleProperty("researcherMode")
+        .orElse(providers.environmentVariable("KAIWA_RESEARCHER_MODE"))
+        .orElse(localResearcherMode)
+        .map { it.equals("true", ignoreCase = true) }.orElse(false))
     outputDirectory.set(layout.buildDirectory.dir("generated/appConfiguration"))
 }
 

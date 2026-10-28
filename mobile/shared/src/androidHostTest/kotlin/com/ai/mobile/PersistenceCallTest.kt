@@ -62,11 +62,15 @@ class PersistenceCallTest {
         assertEquals(1, starts)
         gate.complete(Unit)
         try { withTimeout(5000) { native.connected.await() } }
-        catch (e: TimeoutCancellationException) { fail("Call did not connect: phase=${state.phase}, message=${state.message}, selected=${state.selected?.outcome}") }
+        catch (e: TimeoutCancellationException) { fail("Call did not connect: phase=${state.phase}, message=${state.message}") }
         state.finish()
-        withContext(Dispatchers.IO) { withTimeout(5000) { while (state.selected == null) delay(10) } }
-        assertEquals("Ended", state.selected!!.outcome)
-        assertEquals("こんにちは", state.selected!!.turns().single().text)
+        withContext(Dispatchers.IO) { withTimeout(5000) { while (state.phase != "Ended") delay(10) } }
+        // No after-call summary screen: the call goes back to Home and the transcript is in history.
+        assertNull(state.selected)
+        assertEquals("Home", state.destination)
+        val saved = database.conversations().observe("practice").first().single()
+        assertEquals("Ended", saved.outcome)
+        assertEquals("こんにちは", saved.turns().single().text)
         assertTrue(native.disconnected)
         state.close()
         testScope.cancel()
@@ -113,8 +117,8 @@ class PersistenceCallTest {
             assertNull(state.selected)
             assertEquals("Connection lost", state.phase)
             state.endFailedCall()
-            withContext(Dispatchers.IO) { withTimeout(5000) { while (state.selected == null) delay(10) } }
-            assertEquals("Interrupted", state.selected!!.outcome)
+            withContext(Dispatchers.IO) { withTimeout(5000) { while (state.phase != "Ended") delay(10) } }
+            assertEquals("Interrupted", fixture.database.conversations().observe("practice").first().single().outcome)
             assertFalse(state.callFailed)
             assertEquals(1, fixture.starts.size)
         } finally { fixture.close(state) }
